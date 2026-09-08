@@ -67,7 +67,7 @@ def detect_python_can_configs(interfaces: list[str] | None = None) -> list[dict[
             logger.debug("detect_available_configs(%s) raised: %s", iface, exc)
             continue
         for cfg in configs:
-            entry = {
+            entry: dict[str, Any] = {
                 "interface": cfg.get("interface", iface),
                 "channel": str(cfg.get("channel", "")),
                 "source": "python-can",

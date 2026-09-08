@@ -63,7 +63,7 @@ def _ensure_libusb_backend() -> None:
         try:
             import libusb  # noqa: PLC0415
 
-            dll_path = getattr(libusb.dll, "_name", None)
+            dll_path = getattr(getattr(libusb, "dll", None), "_name", None)
         except (ImportError, AttributeError):
             pass
 
@@ -121,7 +121,7 @@ class CanBusOverTcpServer:
         tcp_port: int,
         bind_address: str = "127.0.0.1",
         tty_baudrate: int | None = None,
-        bus_factory: Callable[..., can.BusABC] | None = None,
+        bus_factory: Callable[..., Any] | None = None,
         server_factory: Callable[..., Any] = asyncio.start_server,
     ):
         self.interface = interface
@@ -173,14 +173,14 @@ class CanBusOverTcpServer:
                 self._handle_client, self.bind_address, self.tcp_port
             )
         except OSError as exc:
-            await self._close_bus()
+            self._close_bus()
             if exc.errno in (errno.EADDRINUSE, errno.EACCES):
                 raise PortUnavailableError(
                     f"Cannot listen for CAN bridge on TCP port {self.tcp_port}: {exc.strerror}"
                 ) from exc
             raise
         except Exception:
-            await self._close_bus()
+            self._close_bus()
             raise
 
         logger.info("CAN TCP server listening on %s port %d", self.bind_address, self.tcp_port)
@@ -193,9 +193,9 @@ class CanBusOverTcpServer:
             await self._server.wait_closed()
             self._server = None
 
-        await self._close_bus()
+        self._close_bus()
 
-    async def _close_bus(self) -> None:
+    def _close_bus(self) -> None:
         if self._bus is not None:
             try:
                 self._bus.shutdown()
@@ -214,7 +214,7 @@ class CanBusOverTcpServer:
         writer.close()
         try:
             await writer.wait_closed()
-        except (ConnectionError, OSError, RuntimeError):
+        except (OSError, RuntimeError):
             logger.debug("TCP writer already closed", exc_info=True)
 
     async def _handle_client(
@@ -249,8 +249,8 @@ class CanBusOverTcpServer:
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
         except asyncio.CancelledError:
-            pass
-        except (ConnectionError, OSError) as exc:
+            raise
+        except OSError as exc:
             logger.warning("CAN bridge session ended: %s", exc)
         except Exception:
             logger.exception("CAN bridge error")
