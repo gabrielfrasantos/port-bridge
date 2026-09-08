@@ -43,14 +43,27 @@ def main() -> None:
 
     window.show()
 
-    # Check for updates 3 seconds after startup so the window has rendered.
+    # Update checker — fires automatically 3 s after startup and on demand.
     checker = UpdateChecker(app)
 
     def _on_update_available(version: str, url: str) -> None:
+        window._restore_check_button()  # re-enable before showing the dialog
+        if isinstance(tray, SystemTrayIcon):
+            tray._check_updates_action.setEnabled(True)
         dlg = UpdateDialog(version, url, window)
         dlg.exec()
 
+    def _on_check_done() -> None:
+        window._restore_check_button()
+        if isinstance(tray, SystemTrayIcon):
+            tray._check_updates_action.setEnabled(True)
+
     checker.update_available.connect(_on_update_available)
+    checker.check_done.connect(_on_check_done)
+
+    window.set_checker(checker)
+    if isinstance(tray, SystemTrayIcon):
+        tray.set_checker(checker)
 
     from PySide6.QtCore import QTimer
 
