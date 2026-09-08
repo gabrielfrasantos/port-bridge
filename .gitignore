@@ -40,7 +40,7 @@ AppDir/
 appimagetool
 *.AppImage
 
-# Generated assets (recreated by scripts/generate_icon.py)
+# Generated assets (recreated by scripts/generate_icon.py before each build)
 assets/icon.png
 assets/icon.ico
 
