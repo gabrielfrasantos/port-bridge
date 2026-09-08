@@ -46,13 +46,9 @@ class UpdateChecker(QObject):
     -------
     update_available(latest_version, release_url):
         Emitted when a newer release is found. Both arguments are strings.
-    check_done:
-        Emitted after every check completes (whether or not an update was found),
-        so callers can re-enable UI controls that were disabled during the check.
     """
 
     update_available: Signal = Signal(str, str)
-    check_done: Signal = Signal()
 
     def check_in_background(self) -> None:
         threading.Thread(target=self._check, daemon=True, name="update-check").start()
@@ -85,8 +81,6 @@ class UpdateChecker(QObject):
             logger.debug("Update check network error: %s", exc)
         except Exception as exc:
             logger.debug("Update check failed: %s", exc)
-        finally:
-            self.check_done.emit()
 
 
 class UpdateDialog(QDialog):
