@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "port-bridge"
+version = "0.1.0"
+description = "A cross-platform GUI bridge that exposes serial and CAN bus hardware over TCP."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+keywords = ["CAN", "serial", "bridge", "TCP", "embedded", "hardware"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Hardware",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "pyserial>=3.5",
+    "python-can>=4.0",
+    "gs_usb>=0.3.0",
+    "libusb>=1.0.27",
+    "libusb-package>=1.0.26.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+port-bridge = "portbridge.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["portbridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
