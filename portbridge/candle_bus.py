@@ -14,6 +14,8 @@ Usage:
 
 from __future__ import annotations
 
+from typing import Any
+
 import can
 import candle_driver
 
@@ -41,7 +43,7 @@ class CandleBus:
         self,
         channel: int = 0,
         bitrate: int = 500000,
-        **_kwargs,
+        **_kwargs: Any,
     ) -> None:
         devices = candle_driver.list_devices()
         if not devices:

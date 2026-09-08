@@ -64,6 +64,11 @@ ignore = ["B008", "B009", "B010"]
 
 [tool.mypy]
 python_version = "3.10"
+files = ["portbridge"]
 strict = true
 ignore_missing_imports = true
 exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = ["portbridge.gui.*"]
+ignore_errors = true

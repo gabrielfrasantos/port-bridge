@@ -3,6 +3,8 @@
 import asyncio
 import errno
 import logging
+from collections.abc import Callable
+from typing import Any
 
 import serial
 
@@ -18,8 +20,8 @@ class SerialOverTcpServer:
         baudrate: int,
         tcp_port: int,
         bind_address: str = "127.0.0.1",
-        serial_factory=serial.Serial,
-        server_factory=asyncio.start_server,
+        serial_factory: Callable[..., serial.Serial] = serial.Serial,
+        server_factory: Callable[..., Any] = asyncio.start_server,
     ):
         self.serial_port = serial_port
         self.baudrate = baudrate
@@ -154,11 +156,11 @@ class SerialOverTcpServer:
 
     def _serial_read_blocking(self) -> bytes:
         assert self._serial is not None
-        data = self._serial.read(1)
+        data: bytes = bytes(self._serial.read(1))
         if data:
-            remaining = self._serial.in_waiting
+            remaining: int = self._serial.in_waiting
             if remaining > 0:
-                data += self._serial.read(remaining)
+                data += bytes(self._serial.read(remaining))
         return data
 
     async def _tcp_to_serial(self) -> None:

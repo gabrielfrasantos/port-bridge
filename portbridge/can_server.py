@@ -21,6 +21,7 @@ import asyncio
 import errno
 import logging
 import struct
+from collections.abc import Callable
 from typing import Any
 
 import can
@@ -71,7 +72,7 @@ def _ensure_libusb_backend() -> None:
 
     _original = _lb1.get_backend
 
-    def _patched(find_library=None):  # type: ignore[override]
+    def _patched(find_library: Any = None) -> Any:
         if find_library is None:
             find_library = lambda _: dll_path  # noqa: E731
         return _original(find_library=find_library)
@@ -120,8 +121,8 @@ class CanBusOverTcpServer:
         tcp_port: int,
         bind_address: str = "127.0.0.1",
         tty_baudrate: int | None = None,
-        bus_factory=None,
-        server_factory=asyncio.start_server,
+        bus_factory: Callable[..., can.BusABC] | None = None,
+        server_factory: Callable[..., Any] = asyncio.start_server,
     ):
         self.interface = interface
         self.channel = channel

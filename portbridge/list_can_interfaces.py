@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ _PROBED_INTERFACES = [
 ]
 
 
-def detect_python_can_configs(interfaces: list[str] | None = None) -> list[dict]:
+def detect_python_can_configs(interfaces: list[str] | None = None) -> list[dict[str, Any]]:
     """Return configs detected by python-can's built-in enumerator."""
     try:
         import can
@@ -58,7 +59,7 @@ def detect_python_can_configs(interfaces: list[str] | None = None) -> list[dict]
     probe_list = interfaces if interfaces is not None else _PROBED_INTERFACES
     probe_list = list(dict.fromkeys(probe_list))
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     for iface in probe_list:
         try:
             configs = can.detect_available_configs(interfaces=[iface])
@@ -79,7 +80,7 @@ def detect_python_can_configs(interfaces: list[str] | None = None) -> list[dict]
     return results
 
 
-def detect_candle_devices() -> list[dict]:
+def detect_candle_devices() -> list[dict[str, Any]]:
     """Return one entry per Candle USB device found via candle_driver."""
     try:
         import candle_driver
@@ -93,7 +94,7 @@ def detect_candle_devices() -> list[dict]:
         logger.warning("candle_driver.list_devices() raised: %s", exc)
         return []
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     for idx, device in enumerate(devices):
         name: str = ""
         try:
@@ -111,7 +112,7 @@ def detect_candle_devices() -> list[dict]:
     return results
 
 
-def detect_slcan_serial_ports() -> list[dict]:
+def detect_slcan_serial_ports() -> list[dict[str, Any]]:
     """Return serial ports that could be slcan adapters (e.g. CANable in slcan mode)."""
     try:
         from serial.tools.list_ports import comports
@@ -119,7 +120,7 @@ def detect_slcan_serial_ports() -> list[dict]:
         logger.debug("pyserial not installed; skipping serial port detection.")
         return []
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     for port in comports():
         results.append(
             {
@@ -132,10 +133,10 @@ def detect_slcan_serial_ports() -> list[dict]:
     return results
 
 
-def gather_all(interfaces: list[str] | None = None) -> list[dict]:
+def gather_all(interfaces: list[str] | None = None) -> list[dict[str, Any]]:
     """Aggregate all detection sources, deduplicating on (interface, channel)."""
     seen: set[tuple[str, str]] = set()
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
 
     for entry in (
         detect_python_can_configs(interfaces)
@@ -151,7 +152,7 @@ def gather_all(interfaces: list[str] | None = None) -> list[dict]:
     return results
 
 
-def format_table(configs: list[dict]) -> str:
+def format_table(configs: list[dict[str, Any]]) -> str:
     """Render configs as a human-readable aligned text table."""
     if not configs:
         return "No CAN interfaces detected."
