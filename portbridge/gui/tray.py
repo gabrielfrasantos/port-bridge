@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -27,12 +27,12 @@ def create_app_icon() -> QIcon:
 class SystemTrayIcon(QSystemTrayIcon):
     """System-tray presence for port-bridge.
 
-    Double-click or single-click (platform-dependent) toggles the main window.
+    Single-click or double-click toggles the main window.
     Right-click shows a context menu with Show/Hide and Quit.
     """
 
-    def __init__(self, window: object, parent: object = None) -> None:
-        super().__init__(create_app_icon(), parent)  # type: ignore[arg-type]
+    def __init__(self, window: object, parent: QObject | None = None) -> None:
+        super().__init__(create_app_icon(), parent)
         self._window = window
 
         menu = QMenu()
@@ -46,7 +46,10 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.activated.connect(self._on_activated)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
             self._toggle_window()
 
     def _toggle_window(self) -> None:

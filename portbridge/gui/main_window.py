@@ -22,9 +22,13 @@ Layout
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QCloseEvent, QColor, QTextCharFormat, QTextCursor
+
+if TYPE_CHECKING:
+    from portbridge.gui.tray import SystemTrayIcon
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -66,7 +70,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("port-bridge")
         self.setMinimumWidth(600)
 
-        self._tray: object = None  # set via set_tray() after construction
+        self._tray: SystemTrayIcon | None = None
 
         self._controller = BridgeController(self)
         self._controller.started.connect(self._on_started)
@@ -90,7 +94,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_serial_ports()
 
-    def set_tray(self, tray: object) -> None:
+    def set_tray(self, tray: SystemTrayIcon | None) -> None:
         self._tray = tray
 
     def closeEvent(self, event: QCloseEvent) -> None:

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from portbridge import __version__
@@ -56,7 +57,10 @@ class UpdateChecker(QObject):
         try:
             req = urllib.request.Request(
                 _RELEASES_API,
-                headers={"Accept": "application/vnd.github+json"},
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": f"port-bridge/{__version__}",
+                },
             )
             with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
                 data: dict[str, object] = json.loads(resp.read())
@@ -64,7 +68,7 @@ class UpdateChecker(QObject):
             tag = str(data.get("tag_name", "")).lstrip("v")
             html_url = str(data.get("html_url", ""))
 
-            if not tag:
+            if not tag or not html_url:
                 return
 
             if _parse_version(tag) > _parse_version(__version__):
@@ -82,8 +86,10 @@ class UpdateChecker(QObject):
 class UpdateDialog(QDialog):
     """Asks the user whether to open the release page for the new version."""
 
-    def __init__(self, latest_version: str, release_url: str, parent: object = None) -> None:
-        super().__init__(parent)  # type: ignore[arg-type]
+    def __init__(
+        self, latest_version: str, release_url: str, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
         self._release_url = release_url
 
         self.setWindowTitle("Update Available")
