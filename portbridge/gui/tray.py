@@ -39,11 +39,19 @@ class SystemTrayIcon(QSystemTrayIcon):
         self._toggle_action = menu.addAction("Hide")
         self._toggle_action.triggered.connect(self._toggle_window)
         menu.addSeparator()
+        log_action = menu.addAction("Open Log File")
+        log_action.triggered.connect(self._open_log)
+        menu.addSeparator()
         quit_action = menu.addAction("Quit")
         quit_action.triggered.connect(QApplication.quit)
         self.setContextMenu(menu)
         self.setToolTip("port-bridge")
         self.activated.connect(self._on_activated)
+
+    def _open_log(self) -> None:
+        from portbridge.gui.log_file import open_log_file  # noqa: PLC0415
+
+        open_log_file()
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (

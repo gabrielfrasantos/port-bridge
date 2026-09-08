@@ -22,6 +22,7 @@ Layout
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Slot
@@ -29,6 +30,7 @@ from PySide6.QtGui import QCloseEvent, QColor, QTextCharFormat, QTextCursor
 
 if TYPE_CHECKING:
     from portbridge.gui.tray import SystemTrayIcon
+
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -40,6 +42,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -65,12 +68,13 @@ def _status_dot(color: str) -> QLabel:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, log_path: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("port-bridge")
         self.setMinimumWidth(600)
 
         self._tray: SystemTrayIcon | None = None
+        self._log_path = log_path
 
         self._controller = BridgeController(self)
         self._controller.started.connect(self._on_started)
@@ -93,6 +97,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_log_panel(), stretch=1)
 
         self._refresh_serial_ports()
+        self._setup_status_bar()
+
+    def _setup_status_bar(self) -> None:
+        bar = QStatusBar()
+        self.setStatusBar(bar)
+        if self._log_path is not None:
+            log_label = QLabel(f"Log: {self._log_path}")
+            log_label.setStyleSheet("color: #888888; font-size: 10px;")
+            bar.addWidget(log_label, 1)
+            open_btn = QPushButton("Open Log")
+            open_btn.setFlat(True)
+            open_btn.setStyleSheet("color: #aaaaff; font-size: 10px;")
+            open_btn.clicked.connect(self._open_log)
+            bar.addPermanentWidget(open_btn)
 
     def set_tray(self, tray: SystemTrayIcon | None) -> None:
         self._tray = tray
@@ -244,6 +262,12 @@ class MainWindow(QMainWindow):
         else:
             self._controller.start(self._build_config())
             self._start_btn.setEnabled(False)
+
+    @Slot()
+    def _open_log(self) -> None:
+        from portbridge.gui.log_file import open_log_file  # noqa: PLC0415
+
+        open_log_file()
 
     @Slot()
     def _on_started(self) -> None:

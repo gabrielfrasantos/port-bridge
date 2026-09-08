@@ -15,9 +15,14 @@ def main() -> None:
         )
         sys.exit(1)
 
+    # File logging must be set up before anything else so even early crashes
+    # are captured on disk.
+    from portbridge.gui import log_file
     from portbridge.gui.main_window import MainWindow
     from portbridge.gui.tray import SystemTrayIcon, create_app_icon
     from portbridge.gui.updater import UpdateChecker, UpdateDialog
+
+    log_path = log_file.setup()
 
     app = QApplication(sys.argv)
     app.setApplicationName("port-bridge")
@@ -26,7 +31,7 @@ def main() -> None:
     # Don't quit when the last window is hidden (we live in the tray).
     app.setQuitOnLastWindowClosed(False)
 
-    window = MainWindow()
+    window = MainWindow(log_path=log_path)
 
     if QSystemTrayIcon.isSystemTrayAvailable():
         tray = SystemTrayIcon(window, app)
