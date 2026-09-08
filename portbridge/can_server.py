@@ -100,7 +100,12 @@ def _build_bus_kwargs(
     }
 
     if interface in ("gs_usb", "candle"):
-        kwargs["channel"] = int(channel)
+        try:
+            kwargs["channel"] = int(channel)
+        except ValueError as exc:
+            raise ValueError(
+                f"{interface} expects a numeric device index (e.g. 0), got '{channel}'"
+            ) from exc
         kwargs["fd"] = False
         kwargs["state"] = can.bus.BusState.ACTIVE
     else:
