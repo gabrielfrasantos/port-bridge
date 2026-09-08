@@ -9,7 +9,7 @@ from unittest import mock
 
 
 class FakeCanMessage:
-    def __init__(self, arbitration_id, is_extended_id=False, dlc=0, data=b"", is_remote_frame=False):
+    def __init__(self, arbitration_id, is_extended_id=False, dlc=0, data=b"", is_remote_frame=False):  # noqa: E501
         self.arbitration_id = arbitration_id
         self.is_extended_id = is_extended_id
         self.dlc = dlc

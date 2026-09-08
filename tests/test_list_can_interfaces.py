@@ -39,7 +39,6 @@ if "serial" not in sys.modules:
 
 from portbridge import list_can_interfaces
 
-
 # ---------------------------------------------------------------------------
 # Helpers to build isolated stubs for each test class
 # ---------------------------------------------------------------------------
@@ -243,7 +242,7 @@ class TestGatherAll(unittest.TestCase):
             mock.patch.object(
                 list_can_interfaces,
                 "detect_python_can_configs",
-                return_value=[{"interface": "socketcan", "channel": "can0", "source": "python-can"}],
+                return_value=[{"interface": "socketcan", "channel": "can0", "source": "python-can"}],  # noqa: E501
             ),
             mock.patch.object(
                 list_can_interfaces,
@@ -253,7 +252,7 @@ class TestGatherAll(unittest.TestCase):
             mock.patch.object(
                 list_can_interfaces,
                 "detect_slcan_serial_ports",
-                return_value=[{"interface": "slcan", "channel": "/dev/ttyACM0", "source": "serial-ports"}],
+                return_value=[{"interface": "slcan", "channel": "/dev/ttyACM0", "source": "serial-ports"}],  # noqa: E501
             ),
         ):
             result = list_can_interfaces.gather_all()
@@ -312,7 +311,7 @@ class TestFormatTable(unittest.TestCase):
     def test_table_contains_config_data(self):
         configs = [
             {"interface": "socketcan", "channel": "can0", "source": "python-can"},
-            {"interface": "candle", "channel": "0", "details": "CANable", "source": "candle_driver"},
+            {"interface": "candle", "channel": "0", "details": "CANable", "source": "candle_driver"},  # noqa: E501
         ]
 
         result = list_can_interfaces.format_table(configs)
@@ -343,7 +342,9 @@ class TestBridgeServerListCan(unittest.IsolatedAsyncioTestCase):
         from portbridge import bridge_server as bs
 
         fake_configs = [{"interface": "socketcan", "channel": "can0", "source": "python-can"}]
-        fake_table = "Interface  Channel  Details  Source\n-----\nsocketcan  can0             python-can"
+        fake_table = (
+            "Interface  Channel  Details  Source\n-----\nsocketcan  can0             python-can"
+        )
 
         with (
             mock.patch("portbridge.list_can_interfaces.gather_all", return_value=fake_configs),

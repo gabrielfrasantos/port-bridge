@@ -3,6 +3,7 @@
 import asyncio
 import errno
 import logging
+
 import serial
 
 from .server_errors import HardwareUnavailableError, PortUnavailableError

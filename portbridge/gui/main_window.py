@@ -207,7 +207,10 @@ class MainWindow(QMainWindow):
         self._log_view.setReadOnly(True)
         self._log_view.setMaximumBlockCount(2000)
         self._log_view.setStyleSheet(
-            "QPlainTextEdit { background: #1e1e1e; color: #dddddd; font-family: monospace; font-size: 11px; }"
+            "QPlainTextEdit {"
+            " background: #1e1e1e; color: #dddddd;"
+            " font-family: monospace; font-size: 11px;"
+            " }"
         )
         return self._log_view
 
