@@ -1,12 +1,19 @@
 name: Build Installers
 
 on:
-  release:
-    types: [published]
+  # Called directly by release-please.yml after a release is created.
+  # The release: published trigger does NOT fire when GITHUB_TOKEN creates
+  # the release (GitHub prevents cascading workflow triggers from its own token).
+  workflow_call:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+  # Manual backfill: Actions → Build Installers → Run workflow → tag_name
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing release tag to upload artifacts to (e.g. v0.1.1)
+        description: Existing release tag to upload artifacts to (e.g. v0.1.2)
         required: true
         type: string
 
@@ -14,8 +21,7 @@ permissions:
   contents: read
 
 env:
-  # For release events the tag comes from the event; for manual runs use the input.
-  APP_VERSION: ${{ github.event.release.tag_name || inputs.tag_name }}
+  APP_VERSION: ${{ inputs.tag_name }}
 
 jobs:
   # ── Windows ──────────────────────────────────────────────────────────────
@@ -80,7 +86,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
-            libgl1 libglib2.0-0 \
+            libgl1 libegl1 libglib2.0-0 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 \
             libxkbcommon-x11-0 libdbus-1-3
