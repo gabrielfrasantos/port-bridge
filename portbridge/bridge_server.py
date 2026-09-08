@@ -40,8 +40,8 @@ import logging
 import signal
 import sys
 
-from .serial_server import SerialOverTcpServer
 from .can_server import CanBusOverTcpServer
+from .serial_server import SerialOverTcpServer
 from .server_errors import BridgeServerError
 
 logger = logging.getLogger(__name__)
@@ -61,18 +61,19 @@ def parse_args() -> argparse.Namespace:
         "--serial-baudrate", type=int, default=921600, help="Serial baudrate (default: 921600)"
     )
     serial_group.add_argument(
-        "--serial-tcp-port", type=int, default=5000, help="TCP port for serial bridge (default: 5000)"
+        "--serial-tcp-port", type=int, default=5000,
+        help="TCP port for serial bridge (default: 5000)",
     )
 
     can_group = parser.add_argument_group("CAN bus")
     can_group.add_argument(
         "--can-interface",
-        help="python-can interface type (e.g. socketcan, pcan, slcan, gs_usb, candle). Omit to disable.",
+        help="python-can interface type (e.g. socketcan, pcan, slcan, gs_usb, candle). Omit to disable.",  # noqa: E501
     )
     can_group.add_argument(
         "--can-channel",
         default=None,
-        help="CAN channel (e.g. can0, PCAN_USBBUS1, /dev/ttyACM0, COM3). Required when --can-interface is set.",
+        help="CAN channel (e.g. can0, PCAN_USBBUS1, /dev/ttyACM0, COM3). Required when --can-interface is set.",  # noqa: E501
     )
     can_group.add_argument(
         "--can-bitrate", type=int, default=125000, help="CAN bitrate (default: 125000)"
@@ -102,7 +103,7 @@ def parse_args() -> argparse.Namespace:
         "--bind",
         default="127.0.0.1",
         help="Address to listen on. Defaults to loopback; the bridge has no authentication or "
-        "transport security, so use 0.0.0.0 only on a trusted, isolated network (default: 127.0.0.1)",
+        "transport security, so use 0.0.0.0 only on a trusted, isolated network (default: 127.0.0.1)",  # noqa: E501
     )
 
     parser.add_argument(
@@ -123,8 +124,9 @@ async def main() -> None:
     )
 
     if getattr(args, "list_can", False):
-        from .list_can_interfaces import gather_all, format_table
-        import json as _json
+        import json as _json  # noqa: PLC0415
+
+        from .list_can_interfaces import format_table, gather_all  # noqa: PLC0415
         configs = gather_all()
         if args.output_json:
             print(_json.dumps(configs, indent=2))

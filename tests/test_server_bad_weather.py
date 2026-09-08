@@ -40,11 +40,11 @@ fake_candle_driver_module.CANDLE_ID_EXTENDED = 0x80000000
 fake_candle_driver_module.list_devices = mock.Mock(return_value=[])
 sys.modules["candle_driver"] = fake_candle_driver_module
 
-from portbridge import bridge_server
-from portbridge import can_server
-from portbridge import candle_bus
-from portbridge import serial_server
-from portbridge.server_errors import BridgeServerError, PortUnavailableError
+from portbridge import bridge_server  # noqa: E402
+from portbridge import can_server  # noqa: E402
+from portbridge import candle_bus  # noqa: E402
+from portbridge import serial_server  # noqa: E402
+from portbridge.server_errors import BridgeServerError, PortUnavailableError  # noqa: E402
 
 
 class FakeAsyncServer:
