@@ -1,0 +1,90 @@
+# PyInstaller spec for port-bridge-gui.
+#
+# Windows (onefile .exe — consumed by Inno Setup):
+#   pyinstaller portbridge-gui.spec
+#
+# Linux (onedir — consumed by appimagetool):
+#   pyinstaller portbridge-gui.spec
+#
+# The spec detects the platform and switches mode automatically.
+
+import sys
+
+_WINDOWS = sys.platform == "win32"
+_ICON = "assets/icon.ico" if _WINDOWS else "assets/icon.png"
+
+block_cipher = None
+
+a = Analysis(
+    ["portbridge/gui/__main__.py"],
+    pathex=[],
+    binaries=[],
+    datas=[],
+    hiddenimports=[
+        "portbridge.bridge_server",
+        "portbridge.can_server",
+        "portbridge.candle_bus",
+        "portbridge.list_can_interfaces",
+        "portbridge.serial_server",
+        "portbridge.server_errors",
+        "portbridge.gui.bridge_controller",
+        "portbridge.gui.main_window",
+        "portbridge.gui.tray",
+        "portbridge.gui.updater",
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zlib, cipher=block_cipher)
+
+if _WINDOWS:
+    # Single .exe — Inno Setup wraps it into the installer.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name="port-bridge-gui",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=False,  # no console window on Windows
+        icon=_ICON,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+else:
+    # One-directory bundle — appimagetool wraps it into an AppImage.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="port-bridge-gui",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=False,
+        icon=_ICON,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name="port-bridge-gui",
+    )
