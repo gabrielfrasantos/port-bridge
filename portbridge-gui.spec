@@ -13,8 +13,6 @@ import sys
 _WINDOWS = sys.platform == "win32"
 _ICON = "assets/icon.ico" if _WINDOWS else "assets/icon.png"
 
-block_cipher = None
-
 a = Analysis(
     ["portbridge/gui/__main__.py"],
     pathex=[],
@@ -36,11 +34,11 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zlib, cipher=block_cipher)
+# cipher and a.zlib were removed in PyInstaller 6.0.
+pyz = PYZ(a.pure)
 
 if _WINDOWS:
     # Single .exe — Inno Setup wraps it into the installer.
