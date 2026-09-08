@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.2...v0.1.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* missing python-can hiddenimports and int(channel) on non-numeric… ([#13](https://github.com/gabrielfrasantos/port-bridge/issues/13)) ([410390e](https://github.com/gabrielfrasantos/port-bridge/commit/410390e729552592f458af2b75b9605aeb5aed98))
+* wire build-installers into release-please via workflow_call ([#11](https://github.com/gabrielfrasantos/port-bridge/issues/11)) ([7c8fe63](https://github.com/gabrielfrasantos/port-bridge/commit/7c8fe636e2c9ebed75ca729907bc07f3208409e7))
+
 ## [0.1.2](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.1...v0.1.2) (2026-09-08)
 
 
