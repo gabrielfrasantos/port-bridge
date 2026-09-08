@@ -40,6 +40,16 @@ jobs:
     with:
       tag_name: ${{ needs.release-please.outputs.tag_name }}
 
+  installers:
+    name: Build Installers
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-installers.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+
   publish:
     name: Publish to PyPI
     needs: release
