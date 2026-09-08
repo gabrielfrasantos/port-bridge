@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QObject, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+if TYPE_CHECKING:
+    from portbridge.gui.updater import UpdateChecker
 
 
 def create_app_icon() -> QIcon:
@@ -35,10 +40,14 @@ class SystemTrayIcon(QSystemTrayIcon):
         super().__init__(create_app_icon(), parent)
         self._window = window
 
+        self._checker: UpdateChecker | None = None
+
         menu = QMenu()
         self._toggle_action = menu.addAction("Hide")
         self._toggle_action.triggered.connect(self._toggle_window)
         menu.addSeparator()
+        self._check_updates_action = menu.addAction("Check for Updates")
+        self._check_updates_action.triggered.connect(self._check_for_updates)
         log_action = menu.addAction("Open Log File")
         log_action.triggered.connect(self._open_log)
         menu.addSeparator()
@@ -47,6 +56,14 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.setContextMenu(menu)
         self.setToolTip("port-bridge")
         self.activated.connect(self._on_activated)
+
+    def set_checker(self, checker: UpdateChecker) -> None:
+        self._checker = checker
+
+    def _check_for_updates(self) -> None:
+        if self._checker is not None:
+            self._check_updates_action.setEnabled(False)
+            self._checker.check_in_background()
 
     def _open_log(self) -> None:
         from portbridge.gui.log_file import open_log_file  # noqa: PLC0415
