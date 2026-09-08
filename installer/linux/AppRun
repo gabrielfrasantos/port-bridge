@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppRun — entry point for the port-bridge AppImage.
+# APPDIR is set by the AppImage runtime to the mountpoint of the image.
+exec "$APPDIR/usr/bin/port-bridge-gui" "$@"

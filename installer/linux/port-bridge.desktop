@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=port-bridge
+Comment=Cross-platform serial and CAN bus bridge over TCP
+Exec=port-bridge-gui
+Icon=port-bridge
+Type=Application
+Categories=Development;Electronics;Utility;
+Keywords=CAN;serial;bridge;TCP;embedded;hardware;
+StartupNotify=true
