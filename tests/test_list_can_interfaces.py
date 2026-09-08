@@ -43,6 +43,7 @@ from portbridge import list_can_interfaces
 # Helpers to build isolated stubs for each test class
 # ---------------------------------------------------------------------------
 
+
 def _make_can_stub(return_value=None):
     """Return a fresh (can, can.bus) stub pair with detect_available_configs mocked."""
     stub_bus = types.ModuleType("can.bus")
@@ -79,12 +80,11 @@ def _make_serial_stub(ports=None):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestDetectPythonCanConfigs(unittest.TestCase):
     def setUp(self):
         self._can, self._can_bus = _make_can_stub()
-        self._patcher = mock.patch.dict(
-            sys.modules, {"can": self._can, "can.bus": self._can_bus}
-        )
+        self._patcher = mock.patch.dict(sys.modules, {"can": self._can, "can.bus": self._can_bus})
         self._patcher.start()
 
     def tearDown(self):
@@ -129,9 +129,7 @@ class TestDetectPythonCanConfigs(unittest.TestCase):
 
         self._can.detect_available_configs.side_effect = side_effect
 
-        result = list_can_interfaces.detect_python_can_configs(
-            interfaces=["pcan", "socketcan"]
-        )
+        result = list_can_interfaces.detect_python_can_configs(interfaces=["pcan", "socketcan"])
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["interface"], "socketcan")
@@ -242,7 +240,9 @@ class TestGatherAll(unittest.TestCase):
             mock.patch.object(
                 list_can_interfaces,
                 "detect_python_can_configs",
-                return_value=[{"interface": "socketcan", "channel": "can0", "source": "python-can"}],  # noqa: E501
+                return_value=[
+                    {"interface": "socketcan", "channel": "can0", "source": "python-can"}
+                ],  # noqa: E501
             ),
             mock.patch.object(
                 list_can_interfaces,
@@ -252,7 +252,9 @@ class TestGatherAll(unittest.TestCase):
             mock.patch.object(
                 list_can_interfaces,
                 "detect_slcan_serial_ports",
-                return_value=[{"interface": "slcan", "channel": "/dev/ttyACM0", "source": "serial-ports"}],  # noqa: E501
+                return_value=[
+                    {"interface": "slcan", "channel": "/dev/ttyACM0", "source": "serial-ports"}
+                ],  # noqa: E501
             ),
         ):
             result = list_can_interfaces.gather_all()
@@ -311,7 +313,12 @@ class TestFormatTable(unittest.TestCase):
     def test_table_contains_config_data(self):
         configs = [
             {"interface": "socketcan", "channel": "can0", "source": "python-can"},
-            {"interface": "candle", "channel": "0", "details": "CANable", "source": "candle_driver"},  # noqa: E501
+            {
+                "interface": "candle",
+                "channel": "0",
+                "details": "CANable",
+                "source": "candle_driver",
+            },  # noqa: E501
         ]
 
         result = list_can_interfaces.format_table(configs)

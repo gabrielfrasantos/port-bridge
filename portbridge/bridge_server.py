@@ -61,7 +61,9 @@ def parse_args() -> argparse.Namespace:
         "--serial-baudrate", type=int, default=921600, help="Serial baudrate (default: 921600)"
     )
     serial_group.add_argument(
-        "--serial-tcp-port", type=int, default=5000,
+        "--serial-tcp-port",
+        type=int,
+        default=5000,
         help="TCP port for serial bridge (default: 5000)",
     )
 
@@ -127,6 +129,7 @@ async def main() -> None:
         import json as _json  # noqa: PLC0415
 
         from .list_can_interfaces import format_table, gather_all  # noqa: PLC0415
+
         configs = gather_all()
         if args.output_json:
             print(_json.dumps(configs, indent=2))

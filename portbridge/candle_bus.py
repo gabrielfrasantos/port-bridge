@@ -48,8 +48,7 @@ class CandleBus:
             raise RuntimeError("No Candle USB devices found")
         if channel >= len(devices):
             raise RuntimeError(
-                f"Candle device index {channel} out of range"
-                f" ({len(devices)} device(s) found)"
+                f"Candle device index {channel} out of range ({len(devices)} device(s) found)"
             )
         self._device = devices[channel]
         self._device.open()

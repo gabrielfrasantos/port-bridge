@@ -147,7 +147,9 @@ class BridgeController(QObject):
                     channel=channel,
                     bitrate=config.can_bitrate,
                     tcp_port=config.can_tcp_port,
-                    tty_baudrate=config.can_tty_baudrate if config.can_interface == "slcan" else None,  # noqa: E501
+                    tty_baudrate=config.can_tty_baudrate
+                    if config.can_interface == "slcan"
+                    else None,  # noqa: E501
                     bind_address=config.bind_address,
                 )
                 await srv_can.start()

@@ -10,8 +10,7 @@ def main() -> None:
         from PySide6.QtWidgets import QApplication
     except ImportError:
         print(
-            "PySide6 is required for the GUI. Install it with:\n"
-            '    pip install "port-bridge[gui]"',
+            'PySide6 is required for the GUI. Install it with:\n    pip install "port-bridge[gui]"',
             file=sys.stderr,
         )
         sys.exit(1)

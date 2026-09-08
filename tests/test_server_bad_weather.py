@@ -9,7 +9,9 @@ from unittest import mock
 
 
 class FakeCanMessage:
-    def __init__(self, arbitration_id, is_extended_id=False, dlc=0, data=b"", is_remote_frame=False):  # noqa: E501
+    def __init__(
+        self, arbitration_id, is_extended_id=False, dlc=0, data=b"", is_remote_frame=False
+    ):  # noqa: E501
         self.arbitration_id = arbitration_id
         self.is_extended_id = is_extended_id
         self.dlc = dlc
@@ -313,7 +315,7 @@ class TestCanServerBadWeather(unittest.IsolatedAsyncioTestCase):
         writer = FakeWriter()
 
         with self.assertLogs(can_server.logger, level="WARNING") as logs:
-            await server._handle_client(FakeReader([can_frame(0x123, 1, b"\xAA")]), writer)
+            await server._handle_client(FakeReader([can_frame(0x123, 1, b"\xaa")]), writer)
 
         self.assertIn("CAN bridge session ended", "\n".join(logs.output))
         self.assertTrue(writer.closed)
@@ -356,7 +358,7 @@ class TestCanServerBadWeather(unittest.IsolatedAsyncioTestCase):
             "socketcan", "can0", 500000, 5001, bus_factory=lambda **_kwargs: bus
         )
         server._bus = bus
-        server._reader = FakeReader([can_frame(can_server.CAN_ERR_FLAG, 1, b"\xAA"), b""])
+        server._reader = FakeReader([can_frame(can_server.CAN_ERR_FLAG, 1, b"\xaa"), b""])
 
         await server._tcp_to_can()
 
@@ -421,9 +423,7 @@ class TestCandleBus(unittest.TestCase):
         return fake_device, fake_ch
 
     def _patch_devices(self, devices):
-        return mock.patch.object(
-            fake_candle_driver_module, "list_devices", return_value=devices
-        )
+        return mock.patch.object(fake_candle_driver_module, "list_devices", return_value=devices)
 
     def test_no_devices_raises_runtime_error(self):
         with self._patch_devices([]):
@@ -447,7 +447,7 @@ class TestCandleBus(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_recv_returns_can_message(self):
-        frame = (0, 0x123, b"\xAB\xCD", False, 0)
+        frame = (0, 0x123, b"\xab\xcd", False, 0)
         device, ch = self._make_fake_device(read_result=frame)
         with self._patch_devices([device]):
             bus = candle_bus.CandleBus(channel=0, bitrate=500000)
@@ -459,7 +459,7 @@ class TestCandleBus(unittest.TestCase):
         self.assertEqual(msg.arbitration_id, 0x123)
         self.assertFalse(msg.is_extended_id)
         self.assertEqual(msg.dlc, 2)
-        self.assertEqual(msg.data, b"\xAB\xCD")
+        self.assertEqual(msg.data, b"\xab\xcd")
 
     def test_recv_extended_frame(self):
         frame = (0, 0x1FFFF, b"\x01", True, 0)
@@ -488,11 +488,11 @@ class TestCandleBus(unittest.TestCase):
         with self._patch_devices([device]):
             bus = candle_bus.CandleBus(channel=0, bitrate=500000)
 
-        msg = FakeCanMessage(0x1FFFF, is_extended_id=True, dlc=1, data=b"\xAA")
+        msg = FakeCanMessage(0x1FFFF, is_extended_id=True, dlc=1, data=b"\xaa")
         bus.send(msg)
 
         expected_id = 0x1FFFF | 0x80000000
-        ch.write.assert_called_once_with(expected_id, b"\xAA")
+        ch.write.assert_called_once_with(expected_id, b"\xaa")
 
     def test_shutdown_stops_channel_and_closes_device(self):
         device, ch = self._make_fake_device(read_exception=TimeoutError)
@@ -549,11 +549,13 @@ class TestBridgeServerStartup(unittest.IsolatedAsyncioTestCase):
             bind="127.0.0.1",
         )
 
-        with mock.patch.object(bridge_server, "parse_args", return_value=args), \
-            mock.patch.object(bridge_server, "SerialOverTcpServer", StartedSerialServer), \
-            mock.patch.object(bridge_server, "CanBusOverTcpServer", FailingCanServer), \
-            self.assertLogs(bridge_server.logger, level="ERROR") as logs, \
-            self.assertRaises(SystemExit) as exit_context:
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", StartedSerialServer),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", FailingCanServer),
+            self.assertLogs(bridge_server.logger, level="ERROR") as logs,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
             await bridge_server.main()
 
         self.assertEqual(exit_context.exception.code, 1)
@@ -593,11 +595,13 @@ class TestBridgeServerStartup(unittest.IsolatedAsyncioTestCase):
             bind="127.0.0.1",
         )
 
-        with mock.patch.object(bridge_server, "parse_args", return_value=args), \
-            mock.patch.object(bridge_server, "SerialOverTcpServer", StartedSerialServer), \
-            mock.patch.object(bridge_server, "CanBusOverTcpServer", FailingCanServer), \
-            self.assertLogs(bridge_server.logger, level="ERROR") as logs, \
-            self.assertRaises(SystemExit) as exit_context:
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", StartedSerialServer),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", FailingCanServer),
+            self.assertLogs(bridge_server.logger, level="ERROR") as logs,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
             await bridge_server.main()
 
         self.assertEqual(exit_context.exception.code, 1)
@@ -628,10 +632,12 @@ class TestBridgeServerStartup(unittest.IsolatedAsyncioTestCase):
             bind="127.0.0.1",
         )
 
-        with mock.patch.object(bridge_server, "parse_args", return_value=args), \
-            mock.patch.object(bridge_server, "CanBusOverTcpServer", CapturingCanServer), \
-            self.assertLogs(bridge_server.logger, level="ERROR"), \
-            self.assertRaises(SystemExit):
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", CapturingCanServer),
+            self.assertLogs(bridge_server.logger, level="ERROR"),
+            self.assertRaises(SystemExit),
+        ):
             await bridge_server.main()
 
         self.assertEqual(captured["channel"], "0")
@@ -661,10 +667,12 @@ class TestBridgeServerStartup(unittest.IsolatedAsyncioTestCase):
             bind="127.0.0.1",
         )
 
-        with mock.patch.object(bridge_server, "parse_args", return_value=args), \
-            mock.patch.object(bridge_server, "CanBusOverTcpServer", CapturingCanServer), \
-            self.assertLogs(bridge_server.logger, level="ERROR"), \
-            self.assertRaises(SystemExit):
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", CapturingCanServer),
+            self.assertLogs(bridge_server.logger, level="ERROR"),
+            self.assertRaises(SystemExit),
+        ):
             await bridge_server.main()
 
         self.assertEqual(captured["channel"], "0")

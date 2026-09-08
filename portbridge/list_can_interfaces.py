@@ -168,10 +168,7 @@ def format_table(configs: list[dict]) -> str:
             )
         )
 
-    col_widths = [
-        max(len(h), max(len(r[i]) for r in rows))
-        for i, h in enumerate(headers)
-    ]
+    col_widths = [max(len(h), max(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
 
     def _row(cells: tuple[str, ...]) -> str:
         return "  ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(cells)).rstrip()

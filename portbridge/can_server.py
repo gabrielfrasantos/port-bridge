@@ -52,6 +52,7 @@ def _ensure_libusb_backend() -> None:
     # 1. libusb-package (pyocd) — exposes find_library()
     try:
         import libusb_package
+
         dll_path = libusb_package.find_library("usb-1.0")
     except ImportError:
         pass
@@ -60,6 +61,7 @@ def _ensure_libusb_backend() -> None:
     if not dll_path:
         try:
             import libusb  # noqa: PLC0415
+
             dll_path = getattr(libusb.dll, "_name", None)
         except (ImportError, AttributeError):
             pass
@@ -75,6 +77,7 @@ def _ensure_libusb_backend() -> None:
         return _original(find_library=find_library)
 
     _lb1.get_backend = _patched
+
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +144,7 @@ class CanBusOverTcpServer:
             factory = self._bus_factory
         elif self.interface == "candle":
             from .candle_bus import CandleBus
+
             factory = CandleBus
         else:
             factory = can.Bus

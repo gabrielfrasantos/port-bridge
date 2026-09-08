@@ -45,9 +45,7 @@ class SerialOverTcpServer:
                 f"Cannot open serial port {self.serial_port}: {exc}"
             ) from exc
 
-        logger.info(
-            "Serial port %s opened at %d baud", self.serial_port, self.baudrate
-        )
+        logger.info("Serial port %s opened at %d baud", self.serial_port, self.baudrate)
 
         try:
             self._server = await self._server_factory(

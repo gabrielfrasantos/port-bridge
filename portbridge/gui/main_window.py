@@ -265,6 +265,7 @@ class MainWindow(QMainWindow):
     def _refresh_serial_ports(self) -> None:
         try:
             from serial.tools.list_ports import comports
+
             ports = [p.device for p in comports()]
         except ImportError:
             ports = []
@@ -333,5 +334,6 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _format_record(record: logging.LogRecord) -> str:
         import time
+
         ts = time.strftime("%H:%M:%S", time.localtime(record.created))
         return f"[{ts}] [{record.levelname}] {record.name}: {record.getMessage()}"
