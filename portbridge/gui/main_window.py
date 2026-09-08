@@ -30,6 +30,7 @@ from PySide6.QtGui import QCloseEvent, QColor, QTextCharFormat, QTextCursor
 
 if TYPE_CHECKING:
     from portbridge.gui.tray import SystemTrayIcon
+    from portbridge.gui.updater import UpdateChecker
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
 
         self._tray: SystemTrayIcon | None = None
         self._log_path = log_path
+        self._checker: UpdateChecker | None = None
 
         self._controller = BridgeController(self)
         self._controller.started.connect(self._on_started)
@@ -112,8 +114,17 @@ class MainWindow(QMainWindow):
             open_btn.clicked.connect(self._open_log)
             bar.addPermanentWidget(open_btn)
 
+        self._check_updates_btn = QPushButton("Check for Updates")
+        self._check_updates_btn.setFlat(True)
+        self._check_updates_btn.setStyleSheet("color: #aaaaff; font-size: 10px;")
+        self._check_updates_btn.clicked.connect(self._check_for_updates)
+        bar.addPermanentWidget(self._check_updates_btn)
+
     def set_tray(self, tray: SystemTrayIcon | None) -> None:
         self._tray = tray
+
+    def set_checker(self, checker: UpdateChecker) -> None:
+        self._checker = checker
 
     def closeEvent(self, event: QCloseEvent) -> None:
         from PySide6.QtWidgets import QSystemTrayIcon
@@ -262,6 +273,18 @@ class MainWindow(QMainWindow):
         else:
             self._controller.start(self._build_config())
             self._start_btn.setEnabled(False)
+
+    @Slot()
+    def _check_for_updates(self) -> None:
+        if self._checker is not None:
+            self._check_updates_btn.setEnabled(False)
+            self._check_updates_btn.setText("Checking…")
+            self._checker.check_in_background()
+
+    @Slot()
+    def _restore_check_button(self) -> None:
+        self._check_updates_btn.setEnabled(True)
+        self._check_updates_btn.setText("Check for Updates")
 
     @Slot()
     def _open_log(self) -> None:
