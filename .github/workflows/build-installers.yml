@@ -6,16 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Release tag to upload artifacts to (e.g. v0.1.0)
-        required: false
+        description: Existing release tag to upload artifacts to (e.g. v0.1.1)
+        required: true
         type: string
 
 permissions:
   contents: read
 
-# Extract version from the tag (v0.1.0 → 0.1.0) and expose it to all jobs.
 env:
-  APP_VERSION: ${{ github.event.release.tag_name && github.event.release.tag_name || inputs.tag_name }}
+  # For release events the tag comes from the event; for manual runs use the input.
+  APP_VERSION: ${{ github.event.release.tag_name || inputs.tag_name }}
 
 jobs:
   # ── Windows ──────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -e ".[gui]" pyinstaller
 
       - name: Generate icon files
@@ -49,11 +49,10 @@ jobs:
         run: |
           $ver = "${{ env.APP_VERSION }}".TrimStart("v")
           iscc installer/windows/setup.iss /DAppVersion=$ver
-          # Rename to include version so the asset name is stable
           $src  = "installer-output\port-bridge-$ver-windows-setup.exe"
           $dest = "port-bridge-$ver-windows-setup.exe"
           Move-Item $src $dest
-          echo "INSTALLER=$dest" >> $env:GITHUB_ENV
+          "INSTALLER=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -77,22 +76,21 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install system dependencies
+      - name: Install Qt runtime dependencies
         run: |
           sudo apt-get update -q
-          # Qt needs these at runtime inside the AppImage
           sudo apt-get install -y --no-install-recommends \
-            libgl1 libglib2.0-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libgl1 libglib2.0-0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 \
-            libxkbcommon-x11-0 libdbus-1-3 fuse libfuse2
+            libxkbcommon-x11-0 libdbus-1-3
 
       - name: Install Python dependencies
         run: pip install -e ".[gui]" pyinstaller
 
       - name: Generate icon files
-        run: |
-          # Run headless — PySide6 needs a display or offscreen platform
-          QT_QPA_PLATFORM=offscreen python scripts/generate_icon.py
+        # QT_QPA_PLATFORM=offscreen renders QPixmap without a real display.
+        run: QT_QPA_PLATFORM=offscreen python scripts/generate_icon.py
 
       - name: Build with PyInstaller (onedir)
         run: pyinstaller portbridge-gui.spec
@@ -107,23 +105,24 @@ jobs:
         run: |
           mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
 
-          # Copy the PyInstaller onedir output into usr/bin
           cp -r dist/port-bridge-gui/* AppDir/usr/bin/
 
-          # .desktop file and AppRun must live at the root of AppDir
           cp installer/linux/port-bridge.desktop AppDir/
           cp installer/linux/AppRun AppDir/
           chmod +x AppDir/AppRun
 
-          # Icon at root (name must match Icon= in .desktop)
+          # Icon name must match Icon= in the .desktop file
           cp assets/icon.png AppDir/port-bridge.png
           cp assets/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/port-bridge.png
 
       - name: Build AppImage
         run: |
           ver="${{ env.APP_VERSION }}"
-          ver="${ver#v}"  # strip leading 'v'
-          ARCH=x86_64 ./appimagetool AppDir "port-bridge-${ver}-x86_64.AppImage"
+          ver="${ver#v}"
+          # --appimage-extract-and-run makes appimagetool itself run without
+          # FUSE, which is not available on GitHub Actions runners.
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
+            AppDir "port-bridge-${ver}-x86_64.AppImage"
           echo "APPIMAGE=port-bridge-${ver}-x86_64.AppImage" >> "$GITHUB_ENV"
 
       - name: Upload to GitHub Release
