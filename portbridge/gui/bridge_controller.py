@@ -17,7 +17,6 @@ import logging
 import queue
 import threading
 from dataclasses import dataclass
-from typing import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -118,9 +117,9 @@ class BridgeController(QObject):
             self.stopped.emit()
 
     async def _bridge_main(self, config: BridgeConfig) -> None:
-        from portbridge.serial_server import SerialOverTcpServer
-        from portbridge.can_server import CanBusOverTcpServer
-        from portbridge.server_errors import BridgeServerError
+        from portbridge.can_server import CanBusOverTcpServer  # noqa: PLC0415
+        from portbridge.serial_server import SerialOverTcpServer  # noqa: PLC0415
+        from portbridge.server_errors import BridgeServerError  # noqa: PLC0415
 
         self._loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
@@ -148,7 +147,7 @@ class BridgeController(QObject):
                     channel=channel,
                     bitrate=config.can_bitrate,
                     tcp_port=config.can_tcp_port,
-                    tty_baudrate=config.can_tty_baudrate if config.can_interface == "slcan" else None,
+                    tty_baudrate=config.can_tty_baudrate if config.can_interface == "slcan" else None,  # noqa: E501
                     bind_address=config.bind_address,
                 )
                 await srv_can.start()

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -98,7 +98,9 @@ class MainWindow(QMainWindow):
 
         self._serial_port_combo = QComboBox()
         self._serial_port_combo.setEditable(True)
-        self._serial_port_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._serial_port_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
 
         self._serial_baud_edit = QLineEdit("921600")
         self._serial_baud_edit.setMaximumWidth(100)
