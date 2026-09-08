@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QCloseEvent, QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -66,6 +66,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("port-bridge")
         self.setMinimumWidth(600)
 
+        self._tray: object = None  # set via set_tray() after construction
+
         self._controller = BridgeController(self)
         self._controller.started.connect(self._on_started)
         self._controller.stopped.connect(self._on_stopped)
@@ -87,6 +89,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_log_panel(), stretch=1)
 
         self._refresh_serial_ports()
+
+    def set_tray(self, tray: object) -> None:
+        self._tray = tray
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        if QSystemTrayIcon.isSystemTrayAvailable() and self._tray is not None:
+            self.hide()
+            event.ignore()
+        else:
+            event.accept()
 
     # ------------------------------------------------------------------
     # Builder helpers
@@ -236,6 +250,10 @@ class MainWindow(QMainWindow):
             self._serial_dot.setStyleSheet("color: #44dd44; font-size: 18px;")
         if cfg.can_interface:
             self._can_dot.setStyleSheet("color: #44dd44; font-size: 18px;")
+        from portbridge.gui.tray import SystemTrayIcon
+
+        if isinstance(self._tray, SystemTrayIcon):
+            self._tray.notify_bridge_started()
 
     @Slot()
     def _on_stopped(self) -> None:
@@ -243,6 +261,10 @@ class MainWindow(QMainWindow):
         self._start_btn.setEnabled(True)
         self._serial_dot.setStyleSheet("color: #444444; font-size: 18px;")
         self._can_dot.setStyleSheet("color: #444444; font-size: 18px;")
+        from portbridge.gui.tray import SystemTrayIcon
+
+        if isinstance(self._tray, SystemTrayIcon):
+            self._tray.notify_bridge_stopped()
 
     @Slot(str)
     def _on_error(self, message: str) -> None:

@@ -1,0 +1,59 @@
+name: Build Installers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to upload artifacts to (e.g. v0.1.0)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os-label }} installer
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            os-label: Windows
+            artifact-name: port-bridge-gui.exe
+            archive-name: port-bridge-gui-windows.zip
+            archive-cmd: pwsh -Command "Compress-Archive -Path dist/port-bridge-gui.exe -DestinationPath port-bridge-gui-windows.zip"
+          - os: ubuntu-latest
+            os-label: Linux
+            artifact-name: port-bridge-gui
+            archive-name: port-bridge-gui-linux.tar.gz
+            archive-cmd: tar -czf port-bridge-gui-linux.tar.gz -C dist port-bridge-gui
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[gui]" pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller portbridge-gui.spec
+
+      - name: Archive artifact
+        run: ${{ matrix.archive-cmd }}
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag_name }}
+          files: ${{ matrix.archive-name }}
