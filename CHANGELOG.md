@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.1...v0.1.2) (2026-09-08)
+
+
+### Features
+
+* add build-installers workflow for Windows and Linux ([#9](https://github.com/gabrielfrasantos/port-bridge/issues/9)) ([1efc2be](https://github.com/gabrielfrasantos/port-bridge/commit/1efc2bea24553fd6ec7c7fbeb611d487f70fc178))
+
 ## [0.1.1](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.0...v0.1.1) (2026-09-08)
 
 
