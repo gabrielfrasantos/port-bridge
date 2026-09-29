@@ -1,6 +1,8 @@
 # port-bridge
 
-A cross-platform bridge that exposes serial and CAN bus hardware over TCP, so clients running inside Docker containers or on remote machines can access physical hardware on the host.
+A cross-platform bridge that exposes serial and CAN bus hardware over TCP, and runs J-Link or
+OpenOCD GDB servers for flashing and debugging, so clients running inside Docker containers or
+on remote machines can access physical hardware on the host.
 
 ## How it works
 
@@ -10,6 +12,7 @@ A cross-platform bridge that exposes serial and CAN bus hardware over TCP, so cl
 │                                         │      │                      │
 │  Serial device ──► TCP :5000 (serial)  │◄────►│  C++ / Python client │
 │  CAN adapter   ──► TCP :5001 (CAN)     │◄────►│                      │
+│  J-Link / ICDI ──► TCP :2331/3333 (GDB)│◄────►│  arm-none-eabi-gdb   │
 └─────────────────────────────────────────┘      └──────────────────────┘
 ```
 
@@ -90,6 +93,79 @@ python -m portbridge --serial-port COM3
 | `--list-can` | — | Print detected CAN hardware and exit |
 | `--list-can --json` | — | Same, as JSON |
 
+## Debug probes (J-Link, OpenOCD)
+
+port-bridge can run the GDB server of a debug probe and expose it over TCP, so a client
+in Docker or on another machine can flash and debug the target with `gdb`. The firmware
+image is sent over the GDB connection, so it never has to be on the host.
+
+The tool must be installed on the host:
+
+| `--probe` | Tool | Found via |
+|-----------|------|-----------|
+| `jlink` | SEGGER J-Link Software Pack (`JLinkGDBServerCL`) | `--probe-path`, `PATH`, `C:\Program Files\SEGGER\JLink*`, `/opt/SEGGER/JLink*`, `/Applications/SEGGER/JLink*` |
+| `openocd` | OpenOCD (e.g. distro package, xPack OpenOCD on Windows) | `--probe-path`, `PATH` |
+
+```bash
+# TM4C123 LaunchPad (EK-TM4C123GXL) through its on-board ICDI — GDB on :3333
+port-bridge --probe openocd --openocd-board ek-tm4c123gxl
+
+# TM4C1294 Connected LaunchPad (EK-TM4C1294XL)
+port-bridge --probe openocd --openocd-board ek-tm4c1294xl
+
+# Custom TM4C12x board behind an ICDI (or any other OpenOCD adapter)
+port-bridge --probe openocd \
+    --openocd-config interface/ti-icdi.cfg --openocd-config target/stellaris.cfg
+
+# SEGGER J-Link — GDB on :2331
+port-bridge --probe jlink --jlink-device TM4C123GH6PM
+port-bridge --probe jlink --jlink-device TM4C1294NCPDT \
+    --jlink-interface JTAG --probe-speed 1000 --jlink-serial 801012345
+
+# Serial + CAN + probe from one process
+port-bridge --serial-port /dev/ttyACM0 \
+    --can-interface socketcan --can-channel can0 \
+    --probe openocd --openocd-board ek-tm4c123gxl
+
+# Discover connected probes and installed tools
+port-bridge --list-probes
+port-bridge --list-probes --json
+```
+
+Flash from the client (e.g. inside Docker, with `--bind 0.0.0.0` on the host):
+
+```bash
+# OpenOCD
+arm-none-eabi-gdb firmware.elf -batch \
+    -ex "target extended-remote host.docker.internal:3333" \
+    -ex "monitor reset halt" -ex load -ex "monitor reset run" -ex detach
+
+# J-Link
+arm-none-eabi-gdb firmware.elf -batch \
+    -ex "target remote host.docker.internal:2331" \
+    -ex "monitor reset" -ex load -ex "monitor reset" -ex "monitor go" -ex detach
+```
+
+The telnet port (`4444` for OpenOCD, `2333` for J-Link) is exposed as well. J-Link can only
+listen on loopback or on all interfaces: any `--bind` other than loopback makes it listen on
+all interfaces.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--probe` | — | `jlink` or `openocd`. Omit to disable. |
+| `--probe-path` | auto | Tool executable or its folder |
+| `--probe-gdb-port` | 2331 / 3333 | GDB server TCP port (jlink / openocd) |
+| `--probe-telnet-port` | 2333 / 4444 | Telnet TCP port (jlink / openocd) |
+| `--probe-speed` | 4000 / cfg | Interface speed in kHz (jlink / openocd config default) |
+| `--jlink-device` | — | Target device, e.g. `TM4C123GH6PM` (required for jlink) |
+| `--jlink-interface` | SWD | `SWD` or `JTAG` |
+| `--jlink-serial` | — | Select a J-Link by USB serial number |
+| `--openocd-board` | — | Preset: `ek-tm4c123gxl`, `ek-tm4c1294xl` |
+| `--openocd-config` | — | Config script (`-f`), repeatable |
+| `--openocd-search` | — | Script search directory (`-s`), repeatable |
+| `--openocd-command` | — | Extra command (`-c`) after the configs, repeatable |
+| `--list-probes` | — | Print detected probes and tools and exit (`--json` supported) |
+
 ## Wire protocol
 
 **Serial bridge (default port 5000):** transparent byte passthrough — no framing.
@@ -110,7 +186,9 @@ The format string is `"<IBxxx8s"` — identical to Linux `struct can_frame`.
 ## Security note
 
 The bridge has no authentication or transport security. Bind to loopback
-(`127.0.0.1`, the default) unless you are on a fully isolated, trusted network.
+(`127.0.0.1`, the default) unless you are on a fully isolated, trusted network. This matters
+most for the debug-probe GDB port, which gives full read/write control of the target's memory
+and flash.
 
 ## Running tests
 

@@ -60,6 +60,79 @@ python -m portbridge --serial-port COM3
 | `--list-can` | — | Print detected CAN hardware and exit |
 | `--list-can --json` | — | Same output as JSON |
 
+## Debug probes (J-Link, OpenOCD)
+
+port-bridge can run the GDB server of a debug probe and expose it over TCP, so a client
+in Docker or on another machine can flash and debug the target with `gdb`. The firmware
+image is sent over the GDB connection, so it never has to be on the host.
+
+The tool must be installed on the host:
+
+| `--probe` | Tool | Found via |
+|-----------|------|-----------|
+| `jlink` | SEGGER J-Link Software Pack (`JLinkGDBServerCL`) | `--probe-path`, `PATH`, `C:\Program Files\SEGGER\JLink*`, `/opt/SEGGER/JLink*`, `/Applications/SEGGER/JLink*` |
+| `openocd` | OpenOCD (e.g. distro package, xPack OpenOCD on Windows) | `--probe-path`, `PATH` |
+
+```bash
+# TM4C123 LaunchPad (EK-TM4C123GXL) through its on-board ICDI — GDB on :3333
+port-bridge --probe openocd --openocd-board ek-tm4c123gxl
+
+# TM4C1294 Connected LaunchPad (EK-TM4C1294XL)
+port-bridge --probe openocd --openocd-board ek-tm4c1294xl
+
+# Custom TM4C12x board behind an ICDI (or any other OpenOCD adapter)
+port-bridge --probe openocd \
+    --openocd-config interface/ti-icdi.cfg --openocd-config target/stellaris.cfg
+
+# SEGGER J-Link — GDB on :2331
+port-bridge --probe jlink --jlink-device TM4C123GH6PM
+port-bridge --probe jlink --jlink-device TM4C1294NCPDT \
+    --jlink-interface JTAG --probe-speed 1000 --jlink-serial 801012345
+
+# Serial + CAN + probe from one process
+port-bridge --serial-port /dev/ttyACM0 \
+    --can-interface socketcan --can-channel can0 \
+    --probe openocd --openocd-board ek-tm4c123gxl
+
+# Discover connected probes and installed tools
+port-bridge --list-probes
+port-bridge --list-probes --json
+```
+
+Flash from the client (e.g. inside Docker, with `--bind 0.0.0.0` on the host):
+
+```bash
+# OpenOCD
+arm-none-eabi-gdb firmware.elf -batch \
+    -ex "target extended-remote host.docker.internal:3333" \
+    -ex "monitor reset halt" -ex load -ex "monitor reset run" -ex detach
+
+# J-Link
+arm-none-eabi-gdb firmware.elf -batch \
+    -ex "target remote host.docker.internal:2331" \
+    -ex "monitor reset" -ex load -ex "monitor reset" -ex "monitor go" -ex detach
+```
+
+The telnet port (`4444` for OpenOCD, `2333` for J-Link) is exposed as well. J-Link can only
+listen on loopback or on all interfaces: any `--bind` other than loopback makes it listen on
+all interfaces.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--probe` | — | `jlink` or `openocd`. Omit to disable. |
+| `--probe-path` | auto | Tool executable or its folder |
+| `--probe-gdb-port` | 2331 / 3333 | GDB server TCP port (jlink / openocd) |
+| `--probe-telnet-port` | 2333 / 4444 | Telnet TCP port (jlink / openocd) |
+| `--probe-speed` | 4000 / cfg | Interface speed in kHz (jlink / openocd config default) |
+| `--jlink-device` | — | Target device, e.g. `TM4C123GH6PM` (required for jlink) |
+| `--jlink-interface` | SWD | `SWD` or `JTAG` |
+| `--jlink-serial` | — | Select a J-Link by USB serial number |
+| `--openocd-board` | — | Preset: `ek-tm4c123gxl`, `ek-tm4c1294xl` |
+| `--openocd-config` | — | Config script (`-f`), repeatable |
+| `--openocd-search` | — | Script search directory (`-s`), repeatable |
+| `--openocd-command` | — | Extra command (`-c`) after the configs, repeatable |
+| `--list-probes` | — | Print detected probes and tools and exit (`--json` supported) |
+
 ## GUI
 
 ```bash
@@ -71,7 +144,8 @@ python -m portbridge.gui
 The GUI window shows:
 
 - **Configuration panel** — serial port, baudrate, CAN interface/channel/bitrate, TCP ports, bind address
-- **Status row** — green/red indicators for serial bridge and CAN bridge
+- **Debug probe panel** — J-Link or OpenOCD, J-Link device/interface/serial, OpenOCD config (TM4C LaunchPad presets), speed, GDB/telnet ports, tool path, **Detect probes**
+- **Status row** — green/red indicators for serial bridge, CAN bridge and debug probe
 - **Start / Stop** button
 - **Log panel** — scrolling log of all bridge events (INFO level by default)
 - **Log level** selector — switch between DEBUG, INFO, WARNING, ERROR without restart
@@ -81,9 +155,11 @@ The GUI window shows:
 1. Open the GUI with `port-bridge-gui`.
 2. Select your serial port from the dropdown (auto-detected) or type it in.
 3. Select your CAN interface and channel (or leave blank to disable that bridge).
-4. Adjust TCP ports if the defaults (5000/5001) conflict with existing services.
-5. Click **Start**. Status indicators turn green when the bridge is listening.
-6. Click **Stop** to shut down cleanly. Hardware is released immediately.
+4. Optionally select a debug probe (`jlink` needs a device name such as `TM4C123GH6PM`;
+   `openocd` needs a config such as `board/ek-tm4c123gxl.cfg`).
+5. Adjust TCP ports if the defaults (5000/5001, 2331/3333) conflict with existing services.
+6. Click **Start**. Status indicators turn green when the bridge is listening.
+7. Click **Stop** to shut down cleanly. Hardware is released immediately.
 
 ## Using from Docker
 
@@ -95,6 +171,7 @@ port-bridge --serial-port /dev/ttyACM0 --bind 0.0.0.0
 
 # Inside Docker — connect to host.docker.internal
 nc host.docker.internal 5000   # serial
+arm-none-eabi-gdb fw.elf -ex "target extended-remote host.docker.internal:3333"   # OpenOCD
 ```
 
 The C++ HIL test client in e-foc connects with `--bridge-host host.docker.internal --serial-port 5000 --can-port 5001`.

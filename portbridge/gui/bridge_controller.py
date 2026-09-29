@@ -20,6 +20,8 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from portbridge.probe_server import ProbeConfig
+
 
 @dataclass
 class BridgeConfig:
@@ -33,6 +35,7 @@ class BridgeConfig:
     can_tcp_port: int = 5001
     bind_address: str = "127.0.0.1"
     log_level: str = "INFO"
+    probe: ProbeConfig | None = None
 
 
 class _QueueHandler(logging.Handler):
@@ -118,6 +121,7 @@ class BridgeController(QObject):
 
     async def _bridge_main(self, config: BridgeConfig) -> None:
         from portbridge.can_server import CanBusOverTcpServer  # noqa: PLC0415
+        from portbridge.probe_server import DebugProbeServer  # noqa: PLC0415
         from portbridge.serial_server import SerialOverTcpServer  # noqa: PLC0415
         from portbridge.server_errors import BridgeServerError  # noqa: PLC0415
 
@@ -128,7 +132,7 @@ class BridgeController(QObject):
         root_logger.setLevel(getattr(logging, config.log_level, logging.INFO))
         root_logger.addHandler(self._queue_handler)
 
-        servers: list[SerialOverTcpServer | CanBusOverTcpServer] = []
+        servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer] = []
         try:
             if config.serial_port:
                 srv = SerialOverTcpServer(
@@ -154,6 +158,11 @@ class BridgeController(QObject):
                 )
                 await srv_can.start()
                 servers.append(srv_can)
+
+            if config.probe is not None:
+                srv_probe = DebugProbeServer(config.probe)
+                await srv_probe.start()
+                servers.append(srv_probe)
         except BridgeServerError as exc:
             for s in reversed(servers):
                 await s.stop()
