@@ -152,22 +152,30 @@ def gather_all(interfaces: list[str] | None = None) -> list[dict[str, Any]]:
     return results
 
 
-def format_table(configs: list[dict[str, Any]]) -> str:
-    """Render configs as a human-readable aligned text table."""
-    if not configs:
-        return "No CAN interfaces detected."
+_CAN_COLUMNS = (
+    ("Interface", "interface"),
+    ("Channel", "channel"),
+    ("Details", "details"),
+    ("Source", "source"),
+)
 
-    headers = ("Interface", "Channel", "Details", "Source")
-    rows: list[tuple[str, str, str, str]] = []
-    for cfg in configs:
-        rows.append(
-            (
-                cfg.get("interface", ""),
-                cfg.get("channel", ""),
-                cfg.get("details", ""),
-                cfg.get("source", ""),
-            )
-        )
+
+def format_table(
+    configs: list[dict[str, Any]],
+    columns: tuple[tuple[str, str], ...] = _CAN_COLUMNS,
+    empty_message: str = "No CAN interfaces detected.",
+) -> str:
+    """Render configs as a human-readable aligned text table.
+
+    ``columns`` is a sequence of ``(header, key)`` pairs selecting which entry keys to show.
+    """
+    if not configs:
+        return empty_message
+
+    headers = tuple(header for header, _ in columns)
+    rows: list[tuple[str, ...]] = [
+        tuple(str(cfg.get(key, "")) for _, key in columns) for cfg in configs
+    ]
 
     col_widths = [max(len(h), max(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
 

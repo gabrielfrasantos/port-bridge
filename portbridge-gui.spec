@@ -24,6 +24,7 @@ a = Analysis(
         "portbridge.can_server",
         "portbridge.candle_bus",
         "portbridge.list_can_interfaces",
+        "portbridge.probe_server",
         "portbridge.serial_server",
         "portbridge.server_errors",
         "portbridge.gui.bridge_controller",

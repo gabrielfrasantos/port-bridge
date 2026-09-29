@@ -11,3 +11,7 @@ class HardwareUnavailableError(BridgeServerError):
 
 class PortUnavailableError(BridgeServerError):
     """Raised when a TCP listen port cannot be opened."""
+
+
+class ToolNotFoundError(BridgeServerError):
+    """Raised when an external tool (J-Link GDB server, OpenOCD) is not installed."""

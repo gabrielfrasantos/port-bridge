@@ -46,6 +46,7 @@ from portbridge import (  # noqa: E402
     bridge_server,
     can_server,
     candle_bus,
+    probe_server,
     serial_server,
 )
 from portbridge.server_errors import BridgeServerError, PortUnavailableError  # noqa: E402
@@ -677,6 +678,145 @@ class TestBridgeServerStartup(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["channel"], "0")
         self.assertIsNone(captured["tty_baudrate"])
+
+
+def probe_args(**overrides):
+    values = {
+        "serial_port": None,
+        "serial_baudrate": 921600,
+        "serial_tcp_port": 5000,
+        "can_interface": None,
+        "can_channel": None,
+        "can_bitrate": 125000,
+        "can_tcp_port": 5001,
+        "can_tty_baudrate": 115200,
+        "log_level": "ERROR",
+        "bind": "127.0.0.1",
+        "probe": "openocd",
+        "probe_path": None,
+        "probe_gdb_port": None,
+        "probe_telnet_port": None,
+        "probe_speed": None,
+        "jlink_device": None,
+        "jlink_interface": "SWD",
+        "jlink_serial": None,
+        "openocd_board": None,
+        "openocd_config": [],
+        "openocd_search": [],
+        "openocd_command": [],
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+class TestBridgeServerProbe(unittest.IsolatedAsyncioTestCase):
+    async def _run_main(self, args, probe_cls):
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "DebugProbeServer", probe_cls),
+            self.assertLogs(bridge_server.logger, level="ERROR") as logs,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            await bridge_server.main()
+        return logs, exit_context
+
+    async def test_probe_alone_enables_bridge_and_passes_config(self):
+        configs = []
+
+        class FailingProbe:
+            def __init__(self, config):
+                configs.append(config)
+
+            async def start(self):
+                raise BridgeServerError("probe failed")
+
+        args = probe_args(openocd_board="ek-tm4c123gxl", openocd_config=["extra.cfg"])
+
+        logs, exit_context = await self._run_main(args, FailingProbe)
+
+        self.assertEqual(exit_context.exception.code, 1)
+        self.assertIn("probe failed", logs.output[0])
+        self.assertEqual(configs[0].kind, "openocd")
+        self.assertEqual(configs[0].configs, ["board/ek-tm4c123gxl.cfg", "extra.cfg"])
+        self.assertEqual(configs[0].bind_address, "127.0.0.1")
+
+    async def test_probe_failure_stops_already_started_servers(self):
+        stopped = []
+
+        class StartedSerialServer:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                stopped.append("serial")
+
+        class FailingProbe:
+            def __init__(self, _config):
+                pass
+
+            async def start(self):
+                raise BridgeServerError("probe failed")
+
+        args = probe_args(serial_port="COM3", openocd_board="ek-tm4c123gxl")
+
+        with mock.patch.object(bridge_server, "SerialOverTcpServer", StartedSerialServer):
+            await self._run_main(args, FailingProbe)
+
+        self.assertEqual(stopped, ["serial"])
+
+    async def test_jlink_requires_device(self):
+        logs, exit_context = await self._run_main(probe_args(probe="jlink"), mock.Mock())
+
+        self.assertEqual(exit_context.exception.code, 1)
+        self.assertIn("--jlink-device", logs.output[0])
+
+    async def test_openocd_requires_config(self):
+        logs, exit_context = await self._run_main(probe_args(), mock.Mock())
+
+        self.assertEqual(exit_context.exception.code, 1)
+        self.assertIn("--openocd-board", logs.output[0])
+
+    def test_build_probe_config_jlink(self):
+        args = probe_args(
+            probe="jlink",
+            jlink_device="TM4C1294NCPDT",
+            jlink_serial="123",
+            probe_gdb_port=4000,
+            probe_speed=2000,
+            bind="0.0.0.0",
+        )
+
+        cfg = bridge_server._build_probe_config(args)
+
+        self.assertIsNotNone(cfg)
+        assert cfg is not None
+        self.assertEqual(cfg.kind, "jlink")
+        self.assertEqual(cfg.device, "TM4C1294NCPDT")
+        self.assertEqual(cfg.serial_number, "123")
+        self.assertEqual(cfg.resolved_gdb_port, 4000)
+        self.assertEqual(cfg.resolved_telnet_port, 2333)
+        self.assertEqual(cfg.speed_khz, 2000)
+        self.assertEqual(cfg.bind_address, "0.0.0.0")
+
+    def test_build_probe_config_disabled(self):
+        self.assertIsNone(bridge_server._build_probe_config(argparse.Namespace()))
+
+
+class TestBridgeServerListProbes(unittest.IsolatedAsyncioTestCase):
+    async def test_list_probes_prints_table_and_returns(self):
+        args = probe_args(probe=None, list_can=False, list_probes=True, output_json=False)
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(probe_server, "list_probes", return_value=[]) as list_mock,
+            mock.patch("builtins.print") as print_mock,
+        ):
+            await bridge_server.main()
+
+        list_mock.assert_called_once_with(jlink_path=None, openocd_path=None)
+        self.assertIn("No debug probes", print_mock.call_args.args[0])
 
 
 if __name__ == "__main__":

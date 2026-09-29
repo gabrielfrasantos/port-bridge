@@ -13,6 +13,11 @@
 │  ┌─────────────┐   asyncio loop   ┌──────────────────┐  │
 │  │ CAN adapter │◄────────────────►│ TCP :5001        │  │
 │  └─────────────┘                  └──────────────────┘  │
+│                                                          │
+│  ┌─────────────┐   child process  ┌──────────────────┐  │
+│  │ J-Link /    │◄── JLinkGDB ────►│ TCP :2331 / 3333 │  │
+│  │ ICDI probe  │    Server/openocd│ (GDB, telnet)    │  │
+│  └─────────────┘                  └──────────────────┘  │
 └──────────────────────────────────────────────────────────┘
          ▲                                   ▲
          │ USB / PCI                         │ TCP
@@ -39,6 +44,24 @@ asyncio.run(main())
                     ├── _can_to_tcp()   ← run_in_executor(bus.recv)
                     └── _tcp_to_can()   ← run_in_executor(bus.send)
 ```
+
+### Debug probe (child process)
+
+```
+DebugProbeServer.start()
+  ├── locate tool (--probe-path → PATH → SEGGER install folders)
+  ├── refuse to start if the GDB/telnet port is already in use
+  ├── asyncio.create_subprocess_exec(JLinkGDBServerCL | openocd, ...)
+  ├── _pump_output() task: stdout/stderr lines → logging "portbridge.probe.<kind>"
+  └── ready when the "ready" line is seen OR the telnet port accepts a connection;
+      early exit / timeout → HardwareUnavailableError with the last output lines
+DebugProbeServer.stop()
+  └── terminate() → wait 5 s → kill()
+```
+
+The GDB server owns its sockets. The bridge passes `--bind` through: OpenOCD gets
+`bindto <addr>`, while J-Link only supports `-LocalhostOnly 1|0`, so any non-loopback bind
+means J-Link listens on all interfaces.
 
 ### Shutdown sequence
 
@@ -89,8 +112,9 @@ The format is byte-compatible with Linux `struct can_frame`. Clients on any OS d
 | `serial_server.py` | `SerialOverTcpServer`: pyserial ↔ TCP byte passthrough |
 | `can_server.py` | `CanBusOverTcpServer`: python-can ↔ TCP 16-byte CAN frames |
 | `candle_bus.py` | `CandleBus`: thin wrapper around `candle_driver` (Windows Candle API) |
+| `probe_server.py` | `DebugProbeServer`: J-Link / OpenOCD GDB server lifecycle, tool discovery, `list_probes()` |
 | `list_can_interfaces.py` | Enumerate serial ports + CAN adapters across python-can, candle_driver, pyserial |
-| `server_errors.py` | `BridgeServerError`, `HardwareUnavailableError`, `PortUnavailableError` |
+| `server_errors.py` | `BridgeServerError`, `HardwareUnavailableError`, `PortUnavailableError`, `ToolNotFoundError` |
 | `gui/bridge_controller.py` | `BridgeController`: asyncio ↔ Qt bridge using daemon thread + `SimpleQueue` |
 | `gui/main_window.py` | `MainWindow`: config panel, status indicators, log panel |
 | `gui/__main__.py` | GUI entry point |

@@ -32,6 +32,15 @@ Usage examples:
     python -m portbridge \\
         --serial-port /dev/ttyACM0 --serial-baudrate 921600 \\
         --can-interface socketcan --can-channel can0 --can-bitrate 500000
+
+    # OpenOCD GDB server for a TM4C123 LaunchPad (on-board ICDI), GDB on :3333
+    python -m portbridge --probe openocd --openocd-board ek-tm4c123gxl
+
+    # SEGGER J-Link GDB server (J-Link Software Pack installed), GDB on :2331
+    python -m portbridge --probe jlink --jlink-device TM4C123GH6PM
+
+    # List debug probes and probe tools detected on this machine
+    python -m portbridge --list-probes
 """
 
 import argparse
@@ -41,6 +50,13 @@ import signal
 import sys
 
 from .can_server import CanBusOverTcpServer
+from .probe_server import (
+    JLINK_INTERFACES,
+    OPENOCD_PRESETS,
+    PROBE_KINDS,
+    DebugProbeServer,
+    ProbeConfig,
+)
 from .serial_server import SerialOverTcpServer
 from .server_errors import BridgeServerError
 
@@ -98,7 +114,83 @@ def parse_args() -> argparse.Namespace:
         "--json",
         action="store_true",
         dest="output_json",
-        help="With --list-can: output as JSON array instead of a table.",
+        help="With --list-can or --list-probes: output as JSON array instead of a table.",
+    )
+
+    probe_group = parser.add_argument_group(
+        "Debug probe",
+        "Run a J-Link or OpenOCD GDB server; clients flash and debug via GDB over TCP.",
+    )
+    probe_group.add_argument(
+        "--probe",
+        choices=PROBE_KINDS,
+        help="Debug probe GDB server to run (jlink or openocd). Omit to disable.",
+    )
+    probe_group.add_argument(
+        "--probe-path",
+        help="Path to JLinkGDBServerCL / openocd executable or its folder "
+        "(default: search PATH and standard install locations).",
+    )
+    probe_group.add_argument(
+        "--probe-gdb-port",
+        type=int,
+        help="GDB server TCP port (default: 2331 for jlink, 3333 for openocd)",
+    )
+    probe_group.add_argument(
+        "--probe-telnet-port",
+        type=int,
+        help="Telnet TCP port (default: 2333 for jlink, 4444 for openocd)",
+    )
+    probe_group.add_argument(
+        "--probe-speed",
+        type=int,
+        help="Debug interface speed in kHz (default: 4000 for jlink, config default for openocd)",
+    )
+    probe_group.add_argument(
+        "--jlink-device",
+        help="J-Link target device name (e.g. TM4C123GH6PM, TM4C1294NCPDT). Required for jlink.",
+    )
+    probe_group.add_argument(
+        "--jlink-interface",
+        choices=JLINK_INTERFACES,
+        default="SWD",
+        help="J-Link target interface (default: SWD)",
+    )
+    probe_group.add_argument(
+        "--jlink-serial",
+        help="Select a specific J-Link by USB serial number.",
+    )
+    probe_group.add_argument(
+        "--openocd-board",
+        choices=sorted(OPENOCD_PRESETS),
+        help="OpenOCD board preset (adds the matching board/*.cfg).",
+    )
+    probe_group.add_argument(
+        "--openocd-config",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="OpenOCD config script (-f). Repeatable, e.g. interface/ti-icdi.cfg "
+        "--openocd-config target/stellaris.cfg",
+    )
+    probe_group.add_argument(
+        "--openocd-search",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Extra OpenOCD script search directory (-s). Repeatable.",
+    )
+    probe_group.add_argument(
+        "--openocd-command",
+        action="append",
+        default=[],
+        metavar="CMD",
+        help="Extra OpenOCD command (-c) run after the config scripts. Repeatable.",
+    )
+    probe_group.add_argument(
+        "--list-probes",
+        action="store_true",
+        help="List debug probes and probe tools available on this machine, then exit.",
     )
 
     parser.add_argument(
@@ -116,6 +208,38 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
+    probe = getattr(args, "probe", None)
+    if probe is None:
+        return None
+
+    if probe == "jlink" and not args.jlink_device:
+        logger.error("--jlink-device is required with --probe jlink (e.g. TM4C123GH6PM).")
+        sys.exit(1)
+
+    configs: list[str] = list(args.openocd_config)
+    if args.openocd_board:
+        configs.insert(0, OPENOCD_PRESETS[args.openocd_board])
+    if probe == "openocd" and not configs:
+        logger.error("--openocd-board or --openocd-config is required with --probe openocd.")
+        sys.exit(1)
+
+    return ProbeConfig(
+        kind=probe,
+        executable=args.probe_path,
+        bind_address=args.bind,
+        gdb_port=args.probe_gdb_port,
+        telnet_port=args.probe_telnet_port,
+        speed_khz=args.probe_speed,
+        device=args.jlink_device,
+        interface=args.jlink_interface,
+        serial_number=args.jlink_serial,
+        configs=configs,
+        search_dirs=list(args.openocd_search),
+        commands=list(args.openocd_command),
+    )
 
 
 async def main() -> None:
@@ -137,8 +261,27 @@ async def main() -> None:
             print(format_table(configs))
         return
 
-    if args.serial_port is None and args.can_interface is None:
-        logger.error("At least one of --serial-port or --can-interface must be specified.")
+    if getattr(args, "list_probes", False):
+        import json as _json  # noqa: PLC0415
+
+        from .probe_server import format_probe_table, list_probes  # noqa: PLC0415
+
+        probe_path = getattr(args, "probe_path", None)
+        probe = getattr(args, "probe", None)
+        probes = list_probes(
+            jlink_path=probe_path if probe == "jlink" else None,
+            openocd_path=probe_path if probe == "openocd" else None,
+        )
+        if args.output_json:
+            print(_json.dumps(probes, indent=2))
+        else:
+            print(format_probe_table(probes))
+        return
+
+    probe_config = _build_probe_config(args)
+
+    if args.serial_port is None and args.can_interface is None and probe_config is None:
+        logger.error("At least one of --serial-port, --can-interface or --probe must be specified.")
         sys.exit(1)
 
     if args.can_interface is not None and args.can_channel is None:
@@ -148,7 +291,7 @@ async def main() -> None:
             logger.error("--can-channel is required when --can-interface is specified.")
             sys.exit(1)
 
-    servers: list[SerialOverTcpServer | CanBusOverTcpServer] = []
+    servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer] = []
 
     try:
         if args.serial_port is not None:
@@ -172,6 +315,11 @@ async def main() -> None:
             )
             await can_srv.start()
             servers.append(can_srv)
+
+        if probe_config is not None:
+            probe_srv = DebugProbeServer(probe_config)
+            await probe_srv.start()
+            servers.append(probe_srv)
     except BridgeServerError as exc:
         logger.error("Bridge server startup failed: %s", exc)
         for srv in reversed(servers):
