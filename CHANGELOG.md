@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.4](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.3...v0.1.4) (2026-09-29)
+
+
+### Features
+
+* add J-Link and OpenOCD debug probe bridges ([#28](https://github.com/gabrielfrasantos/port-bridge/issues/28)) ([32a4518](https://github.com/gabrielfrasantos/port-bridge/commit/32a4518b21b349f3c611faf5876e3a80129cbf06))
+
+
+### Build System
+
+* **deps:** Bump softprops/action-gh-release from 3.0.2 to 3.0.3 ([#14](https://github.com/gabrielfrasantos/port-bridge/issues/14)) ([4724cf7](https://github.com/gabrielfrasantos/port-bridge/commit/4724cf7961bc7cf7e8161a1765978c3e60cc77e8))
+
 ## [0.1.3](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.2...v0.1.3) (2026-09-08)
 
 
