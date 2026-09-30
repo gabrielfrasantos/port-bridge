@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.4...v0.1.5) (2026-09-30)
+
+
+### Bug Fixes
+
+* report the real app version so the update check stops flagging 0.1.4 as outdated ([#29](https://github.com/gabrielfrasantos/port-bridge/issues/29)) ([96eaacd](https://github.com/gabrielfrasantos/port-bridge/commit/96eaacdabc6d5470fb05b5135babf9e86d91cfb6))
+
 ## [0.1.4](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.3...v0.1.4) (2026-09-29)
 
 
