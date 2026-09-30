@@ -1,3 +1,3 @@
-"""port-bridge — cross-platform serial and CAN bus bridge over TCP."""
+"""port-bridge — cross-platform serial, CAN bus and debug-probe bridge over TCP."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.4"  # x-release-please-version
