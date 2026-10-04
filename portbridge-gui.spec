@@ -20,6 +20,7 @@ a = Analysis(
     datas=[],
     hiddenimports=[
         # portbridge modules
+        "portbridge.bridge_config",
         "portbridge.bridge_server",
         "portbridge.can_server",
         "portbridge.candle_bus",
@@ -28,6 +29,7 @@ a = Analysis(
         "portbridge.serial_server",
         "portbridge.server_errors",
         "portbridge.gui.bridge_controller",
+        "portbridge.gui.channel_rows",
         "portbridge.gui.main_window",
         "portbridge.gui.tray",
         "portbridge.gui.updater",

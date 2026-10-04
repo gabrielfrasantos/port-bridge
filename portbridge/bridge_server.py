@@ -39,6 +39,15 @@ Usage examples:
     # SEGGER J-Link GDB server (J-Link Software Pack installed), GDB on :2331
     python -m portbridge --probe jlink --jlink-device TM4C123GH6PM
 
+    # ST-LINK GDB server (STM32CubeCLT or STM32CubeIDE installed), GDB on :61234
+    python -m portbridge --probe stlink
+
+    # Several channels of each kind: the plain flags define the first one, --add-* the rest
+    python -m portbridge --serial-port COM3 \
+        --add-serial port=COM4,baud=115200,tcp=5002 \
+        --add-can interface=gs_usb,channel=1,bitrate=500000,tcp=5003 \
+        --add-probe kind=stlink,serial=0670FF485550755187121723,gdb=61244
+
     # List debug probes and probe tools detected on this machine
     python -m portbridge --list-probes
 """
@@ -48,12 +57,25 @@ import asyncio
 import logging
 import signal
 import sys
+from collections.abc import Callable
+from typing import TypeVar
 
+from .bridge_config import (
+    BridgeConfig,
+    CanConfig,
+    SerialConfig,
+    can_channel_or_default,
+    can_from_spec,
+    find_problems,
+    probe_from_spec,
+    serial_from_spec,
+)
 from .can_server import CanBusOverTcpServer
 from .probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
+    STLINK_INTERFACES,
     DebugProbeServer,
     ProbeConfig,
 )
@@ -61,6 +83,8 @@ from .serial_server import SerialOverTcpServer
 from .server_errors import BridgeServerError
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +105,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5000,
         help="TCP port for serial bridge (default: 5000)",
+    )
+    serial_group.add_argument(
+        "--add-serial",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help="Add another serial bridge. Repeatable. SPEC is port=DEV[,baud=N][,tcp=N], "
+        "e.g. port=COM4,baud=115200,tcp=5002",
     )
 
     can_group = parser.add_argument_group("CAN bus")
@@ -106,6 +138,14 @@ def parse_args() -> argparse.Namespace:
         "--can-tcp-port", type=int, default=5001, help="TCP port for CAN bridge (default: 5001)"
     )
     can_group.add_argument(
+        "--add-can",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help="Add another CAN bridge. Repeatable. SPEC is interface=IF[,channel=CH]"
+        "[,bitrate=N][,tcp=N][,tty-baud=N], e.g. interface=gs_usb,channel=1,tcp=5003",
+    )
+    can_group.add_argument(
         "--list-can",
         action="store_true",
         help="List all CAN interfaces and channels available on this machine, then exit.",
@@ -119,32 +159,32 @@ def parse_args() -> argparse.Namespace:
 
     probe_group = parser.add_argument_group(
         "Debug probe",
-        "Run a J-Link or OpenOCD GDB server; clients flash and debug via GDB over TCP.",
+        "Run a J-Link, ST-LINK or OpenOCD GDB server; clients flash and debug via GDB over TCP.",
     )
     probe_group.add_argument(
         "--probe",
         choices=PROBE_KINDS,
-        help="Debug probe GDB server to run (jlink or openocd). Omit to disable.",
+        help="Debug probe GDB server to run (jlink, stlink or openocd). Omit to disable.",
     )
     probe_group.add_argument(
         "--probe-path",
-        help="Path to JLinkGDBServerCL / openocd executable or its folder "
+        help="Path to JLinkGDBServerCL / ST-LINK_gdbserver / openocd executable or its folder "
         "(default: search PATH and standard install locations).",
     )
     probe_group.add_argument(
         "--probe-gdb-port",
         type=int,
-        help="GDB server TCP port (default: 2331 for jlink, 3333 for openocd)",
+        help="GDB server TCP port (default: 2331 for jlink, 61234 for stlink, 3333 for openocd)",
     )
     probe_group.add_argument(
         "--probe-telnet-port",
         type=int,
-        help="Telnet TCP port (default: 2333 for jlink, 4444 for openocd)",
+        help="Telnet TCP port (default: 2333 for jlink, 4444 for openocd; stlink has none)",
     )
     probe_group.add_argument(
         "--probe-speed",
         type=int,
-        help="Debug interface speed in kHz (default: 4000 for jlink, config default for openocd)",
+        help="Debug interface speed in kHz (default: 4000 for jlink, tool default otherwise)",
     )
     probe_group.add_argument(
         "--jlink-device",
@@ -159,6 +199,22 @@ def parse_args() -> argparse.Namespace:
     probe_group.add_argument(
         "--jlink-serial",
         help="Select a specific J-Link by USB serial number.",
+    )
+    probe_group.add_argument(
+        "--stlink-interface",
+        choices=STLINK_INTERFACES,
+        default="SWD",
+        help="ST-LINK target interface (default: SWD)",
+    )
+    probe_group.add_argument(
+        "--stlink-serial",
+        help="Select a specific ST-LINK by serial number.",
+    )
+    probe_group.add_argument(
+        "--stlink-programmer",
+        metavar="DIR",
+        help="STM32CubeProgrammer bin folder required by ST-LINK_gdbserver "
+        "(default: next to ST-LINK_gdbserver or the standard install location).",
     )
     probe_group.add_argument(
         "--openocd-board",
@@ -186,6 +242,15 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="CMD",
         help="Extra OpenOCD command (-c) run after the config scripts. Repeatable.",
+    )
+    probe_group.add_argument(
+        "--add-probe",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help="Add another debug probe. Repeatable. SPEC is kind=jlink|stlink|openocd plus any of "
+        "path, gdb, telnet, speed, device, interface, serial, programmer, board, config, search; "
+        "e.g. kind=stlink,serial=066DFF48,gdb=61244",
     )
     probe_group.add_argument(
         "--list-probes",
@@ -226,6 +291,13 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
         logger.error("--openocd-board or --openocd-config is required with --probe openocd.")
         sys.exit(1)
 
+    if probe == "stlink":
+        interface = getattr(args, "stlink_interface", "SWD")
+        serial_number = getattr(args, "stlink_serial", None)
+    else:
+        interface = args.jlink_interface
+        serial_number = args.jlink_serial
+
     return ProbeConfig(
         kind=probe,
         executable=args.probe_path,
@@ -234,12 +306,70 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
         telnet_port=args.probe_telnet_port,
         speed_khz=args.probe_speed,
         device=args.jlink_device,
-        interface=args.jlink_interface,
-        serial_number=args.jlink_serial,
+        interface=interface,
+        serial_number=serial_number,
+        programmer_path=getattr(args, "stlink_programmer", None),
         configs=configs,
         search_dirs=list(args.openocd_search),
         commands=list(args.openocd_command),
     )
+
+
+def _build_bridge_config(args: argparse.Namespace) -> BridgeConfig:
+    config = BridgeConfig(bind_address=args.bind, log_level=args.log_level)
+
+    probe_config = _build_probe_config(args)
+
+    if args.serial_port is not None:
+        config.serials.append(
+            SerialConfig(
+                port=args.serial_port,
+                baudrate=args.serial_baudrate,
+                tcp_port=args.serial_tcp_port,
+            )
+        )
+
+    if args.can_interface is not None:
+        try:
+            channel = can_channel_or_default(args.can_interface, args.can_channel)
+        except ValueError:
+            logger.error("--can-channel is required when --can-interface is specified.")
+            sys.exit(1)
+        config.cans.append(
+            CanConfig(
+                interface=args.can_interface,
+                channel=channel,
+                bitrate=args.can_bitrate,
+                tcp_port=args.can_tcp_port,
+                tty_baudrate=args.can_tty_baudrate if args.can_interface == "slcan" else None,
+            )
+        )
+
+    if probe_config is not None:
+        config.probes.append(probe_config)
+
+    config.serials += _parse_specs(
+        "--add-serial", getattr(args, "add_serial", None), serial_from_spec
+    )
+    config.cans += _parse_specs("--add-can", getattr(args, "add_can", None), can_from_spec)
+    config.probes += _parse_specs(
+        "--add-probe",
+        getattr(args, "add_probe", None),
+        lambda spec: probe_from_spec(spec, args.bind),
+    )
+
+    return config
+
+
+def _parse_specs(flag: str, specs: list[str] | None, parse: Callable[[str], _T]) -> list[_T]:
+    items: list[_T] = []
+    for spec in specs or []:
+        try:
+            items.append(parse(spec))
+        except ValueError as exc:
+            logger.error("Invalid %s '%s': %s", flag, spec, exc)
+            sys.exit(1)
+    return items
 
 
 async def main() -> None:
@@ -271,6 +401,7 @@ async def main() -> None:
         probes = list_probes(
             jlink_path=probe_path if probe == "jlink" else None,
             openocd_path=probe_path if probe == "openocd" else None,
+            stlink_path=probe_path if probe == "stlink" else None,
         )
         if args.output_json:
             print(_json.dumps(probes, indent=2))
@@ -278,45 +409,46 @@ async def main() -> None:
             print(format_probe_table(probes))
         return
 
-    probe_config = _build_probe_config(args)
+    config = _build_bridge_config(args)
 
-    if args.serial_port is None and args.can_interface is None and probe_config is None:
-        logger.error("At least one of --serial-port, --can-interface or --probe must be specified.")
+    if config.is_empty:
+        logger.error(
+            "At least one of --serial-port, --can-interface, --probe or --add-* must be specified."
+        )
         sys.exit(1)
 
-    if args.can_interface is not None and args.can_channel is None:
-        if args.can_interface in ("gs_usb", "candle"):
-            args.can_channel = "0"
-        else:
-            logger.error("--can-channel is required when --can-interface is specified.")
-            sys.exit(1)
+    problems = find_problems(config)
+    if problems:
+        for problem in problems:
+            logger.error("Invalid configuration: %s", problem)
+        sys.exit(1)
 
     servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer] = []
 
     try:
-        if args.serial_port is not None:
+        for serial in config.serials:
             serial_srv = SerialOverTcpServer(
-                serial_port=args.serial_port,
-                baudrate=args.serial_baudrate,
-                tcp_port=args.serial_tcp_port,
-                bind_address=args.bind,
+                serial_port=serial.port,
+                baudrate=serial.baudrate,
+                tcp_port=serial.tcp_port,
+                bind_address=config.bind_address,
             )
             await serial_srv.start()
             servers.append(serial_srv)
 
-        if args.can_interface is not None:
+        for can in config.cans:
             can_srv = CanBusOverTcpServer(
-                interface=args.can_interface,
-                channel=args.can_channel,
-                bitrate=args.can_bitrate,
-                tcp_port=args.can_tcp_port,
-                tty_baudrate=args.can_tty_baudrate if args.can_interface == "slcan" else None,
-                bind_address=args.bind,
+                interface=can.interface,
+                channel=can.channel,
+                bitrate=can.bitrate,
+                tcp_port=can.tcp_port,
+                tty_baudrate=can.tty_baudrate,
+                bind_address=config.bind_address,
             )
             await can_srv.start()
             servers.append(can_srv)
 
-        if probe_config is not None:
+        for probe_config in config.probes:
             probe_srv = DebugProbeServer(probe_config)
             await probe_srv.start()
             servers.append(probe_srv)

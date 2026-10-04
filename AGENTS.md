@@ -2,22 +2,24 @@
 
 Single source of truth for **Claude, Copilot, and sub-agents**. `CLAUDE.md` and `.github/copilot-instructions.md` point here.
 
-Cross-platform Python bridge that exposes serial and CAN bus hardware over TCP, and runs J-Link / OpenOCD GDB servers for remote flashing and debugging, with an optional PySide6 GUI. Runs on Windows and Linux.
+Cross-platform Python bridge that exposes serial and CAN bus hardware over TCP, and runs J-Link / ST-LINK / OpenOCD GDB servers for remote flashing and debugging, with an optional PySide6 GUI. Runs on Windows and Linux.
 
 ## Architecture
 
 ```
 portbridge/
   bridge_server.py      — CLI entry point: parse args, start servers, wait for SIGINT/SIGTERM
+  bridge_config.py      — BridgeConfig: lists of serial / CAN / probe configs, conflict check, --add-* specs
   serial_server.py      — SerialOverTcpServer: pyserial ↔ TCP byte stream (asyncio)
   can_server.py         — CanBusOverTcpServer: python-can ↔ TCP CAN frames (asyncio)
   candle_bus.py         — CandleBus: candle_driver wrapper (Windows Candle API)
-  probe_server.py       — DebugProbeServer: J-Link / OpenOCD GDB server as a managed child process
+  probe_server.py       — DebugProbeServer: J-Link / ST-LINK / OpenOCD GDB server as a managed child process
   list_can_interfaces.py — detect serial ports + CAN adapters on the host
   server_errors.py      — BridgeServerError, HardwareUnavailableError, PortUnavailableError
   gui/
     __main__.py         — GUI entry point
-    main_window.py      — MainWindow (QMainWindow): config panel + log panel + status indicators
+    main_window.py      — MainWindow (QMainWindow): channel sections + log panel + status indicators
+    channel_rows.py     — ChannelSection ("+ Add" button) and SerialRow / CanRow / ProbeRow widgets
     bridge_controller.py — asyncio ↔ Qt bridge: runs event loop in a daemon thread
 ```
 
@@ -27,7 +29,7 @@ portbridge/
 - Blocking hardware calls (`serial.read`, `bus.recv`, `bus.send`) run in `asyncio.get_running_loop().run_in_executor(None, ...)` — never block the event loop directly.
 - Shutdown: a `stop_event = asyncio.Event()` is set by signal handlers; all servers `await srv.stop()` in the `finally` block.
 - One TCP client per channel at a time; a second connection is immediately closed.
-- External tools (JLinkGDBServerCL, openocd) are spawned with `asyncio.create_subprocess_exec` and their output is drained by a task — never `subprocess.run` on the loop. They own their TCP ports; port-bridge only locates, starts, logs and terminates them.
+- External tools (JLinkGDBServerCL, ST-LINK_gdbserver, openocd) are spawned with `asyncio.create_subprocess_exec` and their output is drained by a task — never `subprocess.run` on the loop. They own their TCP ports; port-bridge only locates, starts, logs and terminates them.
 
 ## GUI design
 
@@ -45,6 +47,7 @@ portbridge/
 | Serial | `/dev/tty*` | `COM*` |
 | SIGTERM handler | `loop.add_signal_handler` | `signal.signal` fallback |
 | J-Link GDB server | `JLinkGDBServerCLExe` (`/opt/SEGGER/JLink*`) | `JLinkGDBServerCL.exe` (`%ProgramFiles%\SEGGER\JLink*`) |
+| ST-LINK GDB server | `ST-LINK_gdbserver` (`/opt/st/stm32cubeclt*/STLink-gdb-server/bin`) | `ST-LINK_gdbserver.exe` (`C:\ST\STM32CubeCLT*\STLink-gdb-server\bin`) |
 | OpenOCD | `openocd` on PATH | `openocd.exe` on PATH; spawn with `CREATE_NO_WINDOW` |
 
 - Never assume a specific path separator, device naming, or signal API. Guard with `sys.platform` or `try/except`.
