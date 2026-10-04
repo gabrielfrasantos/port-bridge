@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.5...v0.1.6) (2026-10-04)
+
+
+### Features
+
+* multiple serial/CAN/probe channels and ST-LINK support ([#31](https://github.com/gabrielfrasantos/port-bridge/issues/31)) ([e2b717e](https://github.com/gabrielfrasantos/port-bridge/commit/e2b717ec67391bb3f1011f5c18f73e824305edc4))
+
 ## [0.1.5](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.4...v0.1.5) (2026-09-30)
 
 
