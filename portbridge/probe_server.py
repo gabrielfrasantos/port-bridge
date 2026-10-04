@@ -188,15 +188,17 @@ _STLINK_PLUGIN = "com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.*"
 _CUBEPROGRAMMER_PLUGIN = "com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.*"
 
 
-def _glob_dirs(patterns: list[Path]) -> list[Path]:
+def _glob_dirs(base: Path, patterns: list[str]) -> list[Path]:
+    # Glob below a literal base: since Python 3.12, Windows matches every pattern part against
+    # directory listings, so a base containing 8.3 short names (RUNNER~1) would never match.
     found: list[Path] = []
     for pattern in patterns:
-        anchor = Path(pattern.anchor or ".")
         try:
-            found.extend(p for p in anchor.glob(str(pattern.relative_to(anchor))) if p.is_dir())
+            found.extend(p for p in base.glob(pattern) if p.is_dir())
         except (OSError, ValueError):
             continue
-    return sorted(found, key=lambda p: _natural_key(str(p)), reverse=True)
+    unique = list(dict.fromkeys(found))
+    return sorted(unique, key=lambda p: _natural_key(str(p)), reverse=True)
 
 
 def _st_roots() -> list[Path]:
@@ -211,23 +213,17 @@ def _st_roots() -> list[Path]:
 
 
 def _stlink_install_dirs() -> list[Path]:
-    patterns: list[Path] = []
+    patterns = [
+        "STM32CubeCLT*/STLink-gdb-server/bin",
+        "stm32cubeclt*/STLink-gdb-server/bin",
+        f"STM32CubeIDE*/STM32CubeIDE/plugins/{_STLINK_PLUGIN}/tools/bin",
+        f"stm32cubeide*/plugins/{_STLINK_PLUGIN}/tools/bin",
+        f"STM32CubeIDE*.app/Contents/Eclipse/plugins/{_STLINK_PLUGIN}/tools/bin",
+    ]
+    found: list[Path] = []
     for root in _st_roots():
-        patterns += [
-            root / "STM32CubeCLT*" / "STLink-gdb-server" / "bin",
-            root / "stm32cubeclt*" / "STLink-gdb-server" / "bin",
-            root / "STM32CubeIDE*" / "STM32CubeIDE" / "plugins" / _STLINK_PLUGIN / "tools" / "bin",
-            root / "stm32cubeide*" / "plugins" / _STLINK_PLUGIN / "tools" / "bin",
-            root
-            / "STM32CubeIDE*.app"
-            / "Contents"
-            / "Eclipse"
-            / "plugins"
-            / _STLINK_PLUGIN
-            / "tools"
-            / "bin",
-        ]
-    return _glob_dirs(patterns)
+        found += _glob_dirs(root, patterns)
+    return list(dict.fromkeys(found))
 
 
 def _cubeprogrammer_install_dirs() -> list[Path]:
@@ -324,7 +320,7 @@ def find_stm32cubeprogrammer(override: str | None = None, gdbserver: str | None 
         bin_dir = Path(gdbserver).resolve().parent
         candidates.append(bin_dir.parent.parent / "STM32CubeProgrammer" / "bin")
         plugins = bin_dir.parent.parent.parent
-        candidates += _glob_dirs([plugins / _CUBEPROGRAMMER_PLUGIN / "tools" / "bin"])
+        candidates += _glob_dirs(plugins, [f"{_CUBEPROGRAMMER_PLUGIN}/tools/bin"])
     found = shutil.which(exe_name)
     if found:
         candidates.append(Path(found).parent)
