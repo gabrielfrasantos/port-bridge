@@ -700,10 +700,16 @@ def probe_args(**overrides):
         "jlink_device": None,
         "jlink_interface": "SWD",
         "jlink_serial": None,
+        "stlink_interface": "SWD",
+        "stlink_serial": None,
+        "stlink_programmer": None,
         "openocd_board": None,
         "openocd_config": [],
         "openocd_search": [],
         "openocd_command": [],
+        "add_serial": [],
+        "add_can": [],
+        "add_probe": [],
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -804,6 +810,126 @@ class TestBridgeServerProbe(unittest.IsolatedAsyncioTestCase):
     def test_build_probe_config_disabled(self):
         self.assertIsNone(bridge_server._build_probe_config(argparse.Namespace()))
 
+    def test_build_probe_config_stlink(self):
+        args = probe_args(
+            probe="stlink",
+            stlink_interface="JTAG",
+            stlink_serial="066DFF48",
+            stlink_programmer="/cp/bin",
+            jlink_serial="ignored",
+        )
+
+        cfg = bridge_server._build_probe_config(args)
+
+        assert cfg is not None
+        self.assertEqual(cfg.kind, "stlink")
+        self.assertEqual(cfg.interface, "JTAG")
+        self.assertEqual(cfg.serial_number, "066DFF48")
+        self.assertEqual(cfg.programmer_path, "/cp/bin")
+        self.assertEqual(cfg.resolved_gdb_port, 61234)
+        self.assertIsNone(cfg.resolved_telnet_port)
+
+
+class TestBridgeServerMultipleChannels(unittest.IsolatedAsyncioTestCase):
+    async def test_add_flags_start_every_channel_then_roll_back(self):
+        events = []
+
+        def recorder(name):
+            class Recorder:
+                def __init__(self, *args, **kwargs):
+                    self.label = kwargs.get("serial_port") or kwargs.get("channel") or args[0].kind
+                    events.append((name, "init", kwargs or args[0]))
+
+                async def start(self):
+                    events.append((name, "start", self.label))
+
+                async def stop(self):
+                    events.append((name, "stop", self.label))
+
+            return Recorder
+
+        class FailingProbe(recorder("probe")):
+            async def start(self):
+                if self.label == "openocd":
+                    raise BridgeServerError("last probe failed")
+                await super().start()
+
+        args = probe_args(
+            probe=None,
+            serial_port="COM3",
+            can_interface="gs_usb",
+            add_serial=["port=COM4,tcp=5002"],
+            add_can=["interface=gs_usb,channel=1,tcp=5003"],
+            add_probe=["kind=stlink", "kind=openocd,board=ek-tm4c123gxl"],
+        )
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", recorder("serial")),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", recorder("can")),
+            mock.patch.object(bridge_server, "DebugProbeServer", FailingProbe),
+            self.assertLogs(bridge_server.logger, level="ERROR"),
+            self.assertRaises(SystemExit),
+        ):
+            await bridge_server.main()
+
+        started = [label for _, action, label in events if action == "start"]
+        stopped = [label for _, action, label in events if action == "stop"]
+        self.assertEqual(started, ["COM3", "COM4", "0", "1", "stlink"])
+        self.assertEqual(stopped, ["stlink", "1", "0", "COM4", "COM3"])
+
+    async def test_port_conflict_exits_before_starting_anything(self):
+        serial_cls = mock.Mock()
+        args = probe_args(probe=None, serial_port="COM3", add_serial=["port=COM4"])
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", serial_cls),
+            self.assertLogs(bridge_server.logger, level="ERROR") as logs,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            await bridge_server.main()
+
+        self.assertEqual(exit_context.exception.code, 1)
+        serial_cls.assert_not_called()
+        self.assertIn("TCP port 5000 is used by serial COM3 and serial COM4", logs.output[0])
+
+    async def test_invalid_add_spec_exits(self):
+        args = probe_args(probe=None, add_can=["interface=socketcan"])
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            self.assertLogs(bridge_server.logger, level="ERROR") as logs,
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            await bridge_server.main()
+
+        self.assertEqual(exit_context.exception.code, 1)
+        self.assertIn("Invalid --add-can 'interface=socketcan'", logs.output[0])
+
+    async def test_add_probe_alone_enables_bridge(self):
+        configs = []
+
+        class FailingProbe:
+            def __init__(self, config):
+                configs.append(config)
+
+            async def start(self):
+                raise BridgeServerError("stop early")
+
+        args = probe_args(probe=None, add_probe=["kind=stlink,serial=1"], bind="0.0.0.0")
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "DebugProbeServer", FailingProbe),
+            self.assertLogs(bridge_server.logger, level="ERROR"),
+            self.assertRaises(SystemExit),
+        ):
+            await bridge_server.main()
+
+        self.assertEqual(configs[0].kind, "stlink")
+        self.assertEqual(configs[0].bind_address, "0.0.0.0")
+
 
 class TestBridgeServerListProbes(unittest.IsolatedAsyncioTestCase):
     async def test_list_probes_prints_table_and_returns(self):
@@ -815,7 +941,7 @@ class TestBridgeServerListProbes(unittest.IsolatedAsyncioTestCase):
         ):
             await bridge_server.main()
 
-        list_mock.assert_called_once_with(jlink_path=None, openocd_path=None)
+        list_mock.assert_called_once_with(jlink_path=None, openocd_path=None, stlink_path=None)
         self.assertIn("No debug probes", print_mock.call_args.args[0])
 
 

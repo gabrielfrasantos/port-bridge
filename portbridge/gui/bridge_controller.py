@@ -16,26 +16,10 @@ import asyncio
 import logging
 import queue
 import threading
-from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from portbridge.probe_server import ProbeConfig
-
-
-@dataclass
-class BridgeConfig:
-    serial_port: str | None = None
-    serial_baudrate: int = 921600
-    serial_tcp_port: int = 5000
-    can_interface: str | None = None
-    can_channel: str | None = None
-    can_bitrate: int = 125000
-    can_tty_baudrate: int = 115200
-    can_tcp_port: int = 5001
-    bind_address: str = "127.0.0.1"
-    log_level: str = "INFO"
-    probe: ProbeConfig | None = None
+from portbridge.bridge_config import BridgeConfig
 
 
 class _QueueHandler(logging.Handler):
@@ -134,33 +118,30 @@ class BridgeController(QObject):
 
         servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer] = []
         try:
-            if config.serial_port:
+            for serial in config.serials:
                 srv = SerialOverTcpServer(
-                    serial_port=config.serial_port,
-                    baudrate=config.serial_baudrate,
-                    tcp_port=config.serial_tcp_port,
+                    serial_port=serial.port,
+                    baudrate=serial.baudrate,
+                    tcp_port=serial.tcp_port,
                     bind_address=config.bind_address,
                 )
                 await srv.start()
                 servers.append(srv)
 
-            if config.can_interface:
-                channel = config.can_channel or "0"
+            for can in config.cans:
                 srv_can = CanBusOverTcpServer(
-                    interface=config.can_interface,
-                    channel=channel,
-                    bitrate=config.can_bitrate,
-                    tcp_port=config.can_tcp_port,
-                    tty_baudrate=config.can_tty_baudrate
-                    if config.can_interface == "slcan"
-                    else None,  # noqa: E501
+                    interface=can.interface,
+                    channel=can.channel,
+                    bitrate=can.bitrate,
+                    tcp_port=can.tcp_port,
+                    tty_baudrate=can.tty_baudrate,
                     bind_address=config.bind_address,
                 )
                 await srv_can.start()
                 servers.append(srv_can)
 
-            if config.probe is not None:
-                srv_probe = DebugProbeServer(config.probe)
+            for probe in config.probes:
+                srv_probe = DebugProbeServer(probe)
                 await srv_probe.start()
                 servers.append(srv_probe)
         except BridgeServerError as exc:

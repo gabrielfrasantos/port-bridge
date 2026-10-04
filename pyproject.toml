@@ -9,7 +9,7 @@ description = "A cross-platform GUI bridge that exposes serial, CAN bus and debu
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
-keywords = ["CAN", "serial", "bridge", "TCP", "embedded", "hardware", "jlink", "openocd", "gdb"]
+keywords = ["CAN", "serial", "bridge", "TCP", "embedded", "hardware", "jlink", "stlink", "openocd", "gdb"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

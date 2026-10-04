@@ -15,8 +15,9 @@
 │  └─────────────┘                  └──────────────────┘  │
 │                                                          │
 │  ┌─────────────┐   child process  ┌──────────────────┐  │
-│  │ J-Link /    │◄── JLinkGDB ────►│ TCP :2331 / 3333 │  │
-│  │ ICDI probe  │    Server/openocd│ (GDB, telnet)    │  │
+│  │ J-Link /    │◄── GDB server ──►│ TCP :2331 / 3333 │  │
+│  │ ST-LINK /   │   (JLink, ST,    │ / 61234          │  │
+│  │ ICDI probe  │    openocd)      │ (GDB, telnet)    │  │
 │  └─────────────┘                  └──────────────────┘  │
 └──────────────────────────────────────────────────────────┘
          ▲                                   ▲
@@ -49,11 +50,13 @@ asyncio.run(main())
 
 ```
 DebugProbeServer.start()
-  ├── locate tool (--probe-path → PATH → SEGGER install folders)
+  ├── locate tool (--probe-path → PATH → SEGGER / STM32CubeCLT / STM32CubeIDE install folders)
+  │     stlink also locates the STM32CubeProgrammer bin folder (-cp)
   ├── refuse to start if the GDB/telnet port is already in use
-  ├── asyncio.create_subprocess_exec(JLinkGDBServerCL | openocd, ...)
-  ├── _pump_output() task: stdout/stderr lines → logging "portbridge.probe.<kind>"
-  └── ready when the "ready" line is seen OR the telnet port accepts a connection;
+  ├── asyncio.create_subprocess_exec(JLinkGDBServerCL | ST-LINK_gdbserver | openocd, ...)
+  ├── _pump_output() task: stdout/stderr lines → logging "portbridge.probe.<kind>.<gdb port>"
+  └── ready when the "ready" line is seen OR the telnet port accepts a connection
+      (ST-LINK has no telnet port: ready line only, the GDB port is never probed);
       early exit / timeout → HardwareUnavailableError with the last output lines
 DebugProbeServer.stop()
   └── terminate() → wait 5 s → kill()
@@ -61,7 +64,16 @@ DebugProbeServer.stop()
 
 The GDB server owns its sockets. The bridge passes `--bind` through: OpenOCD gets
 `bindto <addr>`, while J-Link only supports `-LocalhostOnly 1|0`, so any non-loopback bind
-means J-Link listens on all interfaces.
+means J-Link listens on all interfaces. ST-LINK_gdbserver has no bind option and listens on all
+interfaces.
+
+### Multiple channels
+
+`bridge_config.BridgeConfig` holds lists of `SerialConfig`, `CanConfig` and `ProbeConfig`.
+The CLI (`--add-serial` / `--add-can` / `--add-probe`) and the GUI ("+ Add" rows) both build
+one, reject it if `find_conflicts()` finds a TCP port, serial device or CAN channel claimed
+twice, then start one server per entry. A failed start stops the ones already running, in
+reverse order.
 
 ### Shutdown sequence
 
@@ -85,6 +97,8 @@ QApplication.exec()               asyncio.run(bridge_main())
 - Log records are enqueued by a custom `QueueHandler` in the asyncio thread.
 - A `QTimer` on the main thread drains the queue at 100 ms intervals and appends text to `QPlainTextEdit`.
 - Qt signals from `BridgeController` notify the UI of `started`, `stopped`, and `error` events.
+- Each section (`ChannelSection`) holds any number of rows (`SerialRow`, `CanRow`, `ProbeRow`);
+  the rows are locked while the bridge runs.
 
 ## CAN wire protocol
 
@@ -109,12 +123,14 @@ The format is byte-compatible with Linux `struct can_frame`. Clients on any OS d
 | Module | Responsibility |
 |--------|---------------|
 | `bridge_server.py` | CLI arg parsing; creates and starts servers; owns the stop event |
+| `bridge_config.py` | `BridgeConfig` (lists of serial / CAN / probe configs), `--add-*` spec parsing, `find_conflicts()` |
 | `serial_server.py` | `SerialOverTcpServer`: pyserial ↔ TCP byte passthrough |
 | `can_server.py` | `CanBusOverTcpServer`: python-can ↔ TCP 16-byte CAN frames |
 | `candle_bus.py` | `CandleBus`: thin wrapper around `candle_driver` (Windows Candle API) |
-| `probe_server.py` | `DebugProbeServer`: J-Link / OpenOCD GDB server lifecycle, tool discovery, `list_probes()` |
+| `probe_server.py` | `DebugProbeServer`: J-Link / ST-LINK / OpenOCD GDB server lifecycle, tool discovery, `list_probes()` |
 | `list_can_interfaces.py` | Enumerate serial ports + CAN adapters across python-can, candle_driver, pyserial |
 | `server_errors.py` | `BridgeServerError`, `HardwareUnavailableError`, `PortUnavailableError`, `ToolNotFoundError` |
 | `gui/bridge_controller.py` | `BridgeController`: asyncio ↔ Qt bridge using daemon thread + `SimpleQueue` |
-| `gui/main_window.py` | `MainWindow`: config panel, status indicators, log panel |
+| `gui/main_window.py` | `MainWindow`: channel sections, general settings, status indicators, log panel |
+| `gui/channel_rows.py` | `ChannelSection` and the `SerialRow` / `CanRow` / `ProbeRow` widgets behind the "+ Add" buttons |
 | `gui/__main__.py` | GUI entry point |

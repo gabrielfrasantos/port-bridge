@@ -1,18 +1,22 @@
 """MainWindow: the port-bridge GUI main window.
 
-Layout
+Layout (the three channel sections scroll; "+ Add" appends a row, "−" removes one)
 ------
 ┌─────────────────────────────────────────────────────────┐
 │  Serial ──────────────────────────────────────────────  │
-│  Port [___________▼]  Baud [______]  TCP port [_____]   │
-│  CAN ────────────────────────────────────────────────   │
-│  Interface [______▼]  Channel [___]  Bitrate [______]   │
+│  Port [___________▼]  Baud [______]  TCP port [_____][−]│
+│  [+ Add serial port]                                    │
+│  CAN bus ─────────────────────────────────────────────  │
+│  Interface [______▼]  Channel [___]  Bitrate [______][−]│
 │            TTY baud [______]         TCP port [_____]   │
-│  Debug probe ────────────────────────────────────────   │
-│  Type [______▼]  Speed [____]  GDB [____]  Telnet [___] │
+│  [+ Add CAN bus]                                        │
+│  Debug probes ────────────────────────────────────────  │
+│  Type [______▼]  Speed [____]  GDB [____]  Telnet [_][−]│
 │  J-Link   Device [_________]  Interface [SWD▼] Serial [] │
+│  ST-Link  Interface [SWD▼] Serial [___] CubeProgrammer[] │
 │  OpenOCD  Config [_______________▼]  Search dir [_____]  │
 │  Executable [________________] [...] [Detect probes]    │
+│  [+ Add debug probe]                                    │
 │  Bind address [_______________]  Log level [_______▼]   │
 │                                                         │
 │  ●─ Serial  ●─ CAN  ●─ Probe   [ Start ]                │
@@ -27,10 +31,11 @@ Layout
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
-from PySide6.QtCore import Slot
+from PySide6.QtCore import QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QColor, QTextCharFormat, QTextCursor
 
 if TYPE_CHECKING:
@@ -39,34 +44,28 @@ if TYPE_CHECKING:
 
 from PySide6.QtWidgets import (
     QComboBox,
-    QFileDialog,
-    QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSizePolicy,
+    QScrollArea,
     QStatusBar,
     QVBoxLayout,
     QWidget,
 )
 
-from portbridge.gui.bridge_controller import BridgeConfig, BridgeController
-from portbridge.list_can_interfaces import gather_all
-from portbridge.probe_server import (
-    DEFAULT_JLINK_SPEED_KHZ,
-    DEFAULT_PORTS,
-    JLINK_INTERFACES,
-    OPENOCD_PRESETS,
-    PROBE_KINDS,
-    ProbeConfig,
-    list_probes,
-)
+from portbridge.bridge_config import BridgeConfig, find_conflicts
+from portbridge.gui.bridge_controller import BridgeController
+from portbridge.gui.channel_rows import CanRow, ChannelRow, ChannelSection, ProbeRow, SerialRow
 
-_CAN_INTERFACES = ["socketcan", "pcan", "slcan", "gs_usb", "candle"]
+_T = TypeVar("_T")
+
+_MAX_SECTIONS_HEIGHT = 480
 _LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
 
 _LEVEL_COLORS: dict[int, str] = {
@@ -75,6 +74,13 @@ _LEVEL_COLORS: dict[int, str] = {
     logging.WARNING: "#f0c060",
     logging.ERROR: "#ff6060",
 }
+
+
+def _row_config(label: str, build: Callable[[], _T | None]) -> _T | None:
+    try:
+        return build()
+    except ValueError as exc:
+        raise ValueError(f"{label}: {exc}") from exc
 
 
 def _status_dot(color: str) -> QLabel:
@@ -87,11 +93,12 @@ class MainWindow(QMainWindow):
     def __init__(self, log_path: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("port-bridge")
-        self.setMinimumWidth(600)
+        self.setMinimumWidth(680)
 
         self._tray: SystemTrayIcon | None = None
         self._log_path = log_path
         self._checker: UpdateChecker | None = None
+        self._running_config: BridgeConfig | None = None
 
         self._controller = BridgeController(self)
         self._controller.started.connect(self._on_started)
@@ -108,14 +115,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setSpacing(8)
 
-        layout.addWidget(self._build_serial_group())
-        layout.addWidget(self._build_can_group())
-        layout.addWidget(self._build_probe_group())
+        layout.addWidget(self._build_sections(), stretch=3)
         layout.addWidget(self._build_general_group())
         layout.addWidget(self._build_status_bar())
         layout.addWidget(self._build_log_panel(), stretch=1)
 
-        self._refresh_serial_ports()
         self._setup_status_bar()
 
     def _setup_status_bar(self) -> None:
@@ -156,180 +160,28 @@ class MainWindow(QMainWindow):
     # Builder helpers
     # ------------------------------------------------------------------
 
-    def _build_serial_group(self) -> QGroupBox:
-        box = QGroupBox("Serial")
-        form = QFormLayout(box)
-
-        self._serial_port_combo = QComboBox()
-        self._serial_port_combo.setEditable(True)
-        self._serial_port_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+    def _build_sections(self) -> QScrollArea:
+        self._serial_section = ChannelSection("Serial", "Add serial port", lambda: SerialRow(self))
+        self._can_section = ChannelSection("CAN bus", "Add CAN bus", lambda: CanRow(self))
+        self._probe_section = ChannelSection(
+            "Debug probes", "Add debug probe", lambda: ProbeRow(self)
         )
+        self._sections = [self._serial_section, self._can_section, self._probe_section]
 
-        self._serial_baud_edit = QLineEdit("921600")
-        self._serial_baud_edit.setMaximumWidth(100)
+        content = QWidget()
+        column = QVBoxLayout(content)
+        column.setContentsMargins(0, 0, 0, 0)
+        for section in self._sections:
+            section.rows_changed.connect(self._fit_sections)
+            column.addWidget(section)
+        column.addStretch()
 
-        self._serial_tcp_edit = QLineEdit("5000")
-        self._serial_tcp_edit.setMaximumWidth(80)
-
-        row = QHBoxLayout()
-        row.addWidget(self._serial_port_combo, stretch=2)
-        row.addWidget(QLabel("Baud"))
-        row.addWidget(self._serial_baud_edit)
-        row.addWidget(QLabel("TCP port"))
-        row.addWidget(self._serial_tcp_edit)
-
-        refresh_btn = QPushButton("⟳")
-        refresh_btn.setMaximumWidth(32)
-        refresh_btn.setToolTip("Refresh port list")
-        refresh_btn.clicked.connect(self._refresh_serial_ports)
-        row.addWidget(refresh_btn)
-
-        form.addRow("Port:", row)
-        return box
-
-    def _build_can_group(self) -> QGroupBox:
-        box = QGroupBox("CAN bus")
-        form = QFormLayout(box)
-
-        self._can_iface_combo = QComboBox()
-        self._can_iface_combo.addItem("(disabled)")
-        self._can_iface_combo.addItems(_CAN_INTERFACES)
-        self._can_iface_combo.currentTextChanged.connect(self._on_can_interface_changed)
-
-        self._can_channel_edit = QLineEdit()
-        self._can_channel_edit.setPlaceholderText("can0 / PCAN_USBBUS1 / 0")
-
-        self._can_bitrate_edit = QLineEdit("125000")
-        self._can_bitrate_edit.setMaximumWidth(100)
-
-        self._can_tty_baud_edit = QLineEdit("115200")
-        self._can_tty_baud_edit.setMaximumWidth(100)
-        self._can_tty_baud_edit.setEnabled(False)
-
-        self._can_tcp_edit = QLineEdit("5001")
-        self._can_tcp_edit.setMaximumWidth(80)
-
-        row1 = QHBoxLayout()
-        row1.addWidget(self._can_iface_combo)
-        row1.addWidget(QLabel("Channel"))
-        row1.addWidget(self._can_channel_edit, stretch=1)
-        row1.addWidget(QLabel("Bitrate"))
-        row1.addWidget(self._can_bitrate_edit)
-        row1.addWidget(QLabel("TCP port"))
-        row1.addWidget(self._can_tcp_edit)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("TTY baud (slcan):"))
-        row2.addWidget(self._can_tty_baud_edit)
-        row2.addStretch()
-
-        detect_btn = QPushButton("Detect hardware")
-        detect_btn.clicked.connect(self._detect_can)
-        row2.addWidget(detect_btn)
-
-        form.addRow("Interface:", row1)
-        form.addRow("", row2)
-        return box
-
-    def _build_probe_group(self) -> QGroupBox:
-        box = QGroupBox("Debug probe")
-        form = QFormLayout(box)
-
-        self._probe_kind_combo = QComboBox()
-        self._probe_kind_combo.addItem("(disabled)")
-        self._probe_kind_combo.addItems(list(PROBE_KINDS))
-        self._probe_kind_combo.currentTextChanged.connect(self._on_probe_kind_changed)
-
-        self._probe_speed_edit = QLineEdit()
-        self._probe_speed_edit.setMaximumWidth(80)
-        self._probe_gdb_edit = QLineEdit()
-        self._probe_gdb_edit.setMaximumWidth(80)
-        self._probe_telnet_edit = QLineEdit()
-        self._probe_telnet_edit.setMaximumWidth(80)
-
-        row1 = QHBoxLayout()
-        row1.addWidget(self._probe_kind_combo)
-        row1.addStretch()
-        row1.addWidget(QLabel("Speed (kHz)"))
-        row1.addWidget(self._probe_speed_edit)
-        row1.addWidget(QLabel("GDB port"))
-        row1.addWidget(self._probe_gdb_edit)
-        row1.addWidget(QLabel("Telnet port"))
-        row1.addWidget(self._probe_telnet_edit)
-
-        self._jlink_device_edit = QLineEdit()
-        self._jlink_device_edit.setPlaceholderText("TM4C123GH6PM")
-        self._jlink_if_combo = QComboBox()
-        self._jlink_if_combo.addItems(list(JLINK_INTERFACES))
-        self._jlink_serial_edit = QLineEdit()
-        self._jlink_serial_edit.setPlaceholderText("any")
-        self._jlink_serial_edit.setMaximumWidth(120)
-
-        jlink_row = QHBoxLayout()
-        jlink_row.addWidget(QLabel("Device"))
-        jlink_row.addWidget(self._jlink_device_edit, stretch=1)
-        jlink_row.addWidget(QLabel("Interface"))
-        jlink_row.addWidget(self._jlink_if_combo)
-        jlink_row.addWidget(QLabel("Serial"))
-        jlink_row.addWidget(self._jlink_serial_edit)
-
-        self._openocd_config_combo = QComboBox()
-        self._openocd_config_combo.setEditable(True)
-        self._openocd_config_combo.addItems(list(OPENOCD_PRESETS.values()))
-        self._openocd_config_combo.setToolTip(
-            "OpenOCD config script(s) passed with -f; separate several with ';'"
-        )
-        self._openocd_config_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self._openocd_search_edit = QLineEdit()
-        self._openocd_search_edit.setPlaceholderText("optional")
-
-        openocd_row = QHBoxLayout()
-        openocd_row.addWidget(QLabel("Config"))
-        openocd_row.addWidget(self._openocd_config_combo, stretch=2)
-        openocd_row.addWidget(QLabel("Search dir"))
-        openocd_row.addWidget(self._openocd_search_edit, stretch=1)
-
-        self._probe_path_edit = QLineEdit()
-        self._probe_path_edit.setPlaceholderText("auto-detect (PATH / standard install folders)")
-        browse_btn = QPushButton("…")
-        browse_btn.setMaximumWidth(32)
-        browse_btn.setToolTip("Select JLinkGDBServerCL or openocd executable")
-        browse_btn.clicked.connect(self._browse_probe_path)
-        detect_btn = QPushButton("Detect probes")
-        detect_btn.clicked.connect(self._detect_probes)
-
-        exe_row = QHBoxLayout()
-        exe_row.addWidget(self._probe_path_edit, stretch=1)
-        exe_row.addWidget(browse_btn)
-        exe_row.addWidget(detect_btn)
-
-        self._probe_common_widgets: list[QWidget] = [
-            self._probe_speed_edit,
-            self._probe_gdb_edit,
-            self._probe_telnet_edit,
-            self._probe_path_edit,
-            browse_btn,
-        ]
-        self._jlink_widgets: list[QWidget] = [
-            self._jlink_device_edit,
-            self._jlink_if_combo,
-            self._jlink_serial_edit,
-        ]
-        self._openocd_widgets: list[QWidget] = [
-            self._openocd_config_combo,
-            self._openocd_search_edit,
-        ]
-
-        form.addRow("Type:", row1)
-        form.addRow("J-Link:", jlink_row)
-        form.addRow("OpenOCD:", openocd_row)
-        form.addRow("Executable:", exe_row)
-
-        self._on_probe_kind_changed(self._probe_kind_combo.currentText())
-        return box
+        self._sections_scroll = QScrollArea()
+        self._sections_scroll.setWidgetResizable(True)
+        self._sections_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._sections_scroll.setWidget(content)
+        self._fit_sections()
+        return self._sections_scroll
 
     def _build_general_group(self) -> QGroupBox:
         box = QGroupBox("General")
@@ -389,9 +241,33 @@ class MainWindow(QMainWindow):
         if self._controller.is_running:
             self._controller.stop()
             self._start_btn.setEnabled(False)
-        else:
-            self._controller.start(self._build_config())
-            self._start_btn.setEnabled(False)
+            return
+
+        try:
+            config = self._build_config()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid settings", str(exc))
+            return
+        if config.is_empty:
+            QMessageBox.information(
+                self,
+                "Nothing to start",
+                "Select a serial port, a CAN interface or a debug probe first.",
+            )
+            return
+        conflicts = find_conflicts(config)
+        if conflicts:
+            QMessageBox.warning(
+                self,
+                "Conflicting settings",
+                "Each channel needs its own TCP port and device:\n\n" + "\n".join(conflicts),
+            )
+            return
+
+        self._running_config = config
+        self._set_editing_enabled(False)
+        self._controller.start(config)
+        self._start_btn.setEnabled(False)
 
     @Slot()
     def _check_for_updates(self) -> None:
@@ -415,12 +291,12 @@ class MainWindow(QMainWindow):
     def _on_started(self) -> None:
         self._start_btn.setText("Stop")
         self._start_btn.setEnabled(True)
-        cfg = self._build_config()
-        if cfg.serial_port:
+        cfg = self._running_config or BridgeConfig()
+        if cfg.serials:
             self._serial_dot.setStyleSheet("color: #44dd44; font-size: 18px;")
-        if cfg.can_interface:
+        if cfg.cans:
             self._can_dot.setStyleSheet("color: #44dd44; font-size: 18px;")
-        if cfg.probe is not None:
+        if cfg.probes:
             self._probe_dot.setStyleSheet("color: #44dd44; font-size: 18px;")
         from portbridge.gui.tray import SystemTrayIcon
 
@@ -431,6 +307,8 @@ class MainWindow(QMainWindow):
     def _on_stopped(self) -> None:
         self._start_btn.setText("Start")
         self._start_btn.setEnabled(True)
+        self._running_config = None
+        self._set_editing_enabled(True)
         self._serial_dot.setStyleSheet("color: #444444; font-size: 18px;")
         self._can_dot.setStyleSheet("color: #444444; font-size: 18px;")
         self._probe_dot.setStyleSheet("color: #444444; font-size: 18px;")
@@ -443,6 +321,8 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str) -> None:
         self._start_btn.setText("Start")
         self._start_btn.setEnabled(True)
+        self._running_config = None
+        self._set_editing_enabled(True)
         self._serial_dot.setStyleSheet("color: #ff4444; font-size: 18px;")
         self._can_dot.setStyleSheet("color: #ff4444; font-size: 18px;")
         self._probe_dot.setStyleSheet("color: #ff4444; font-size: 18px;")
@@ -453,148 +333,75 @@ class MainWindow(QMainWindow):
         color = _LEVEL_COLORS.get(record.levelno, "#dddddd")
         self._append_log_line(self._format_record(record), color)
 
-    @Slot(str)
-    def _on_can_interface_changed(self, text: str) -> None:
-        self._can_tty_baud_edit.setEnabled(text == "slcan")
-
-    @Slot(str)
-    def _on_probe_kind_changed(self, text: str) -> None:
-        enabled = text in PROBE_KINDS
-        for widget in self._probe_common_widgets:
-            widget.setEnabled(enabled)
-        for widget in self._jlink_widgets:
-            widget.setEnabled(text == "jlink")
-        for widget in self._openocd_widgets:
-            widget.setEnabled(text == "openocd")
-
-        gdb_port, telnet_port = DEFAULT_PORTS.get(text, (0, 0))
-        self._probe_gdb_edit.setPlaceholderText(str(gdb_port) if enabled else "")
-        self._probe_telnet_edit.setPlaceholderText(str(telnet_port) if enabled else "")
-        speed_hint = {"jlink": str(DEFAULT_JLINK_SPEED_KHZ), "openocd": "cfg"}.get(text, "")
-        self._probe_speed_edit.setPlaceholderText(speed_hint)
-
     @Slot()
-    def _browse_probe_path(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select GDB server executable")
-        if path:
-            self._probe_path_edit.setText(path)
+    def _fit_sections(self) -> None:
+        # New rows are shown by a queued event, so measure once the event loop has run.
+        QTimer.singleShot(0, self._resize_sections)
 
-    @Slot()
-    def _detect_probes(self) -> None:
-        self._append_log_line("[INFO] Scanning for debug probes...", "#888888")
-        kind = self._probe_kind_combo.currentText()
-        path = self._probe_path_edit.text().strip() or None
-        try:
-            probes = list_probes(
-                jlink_path=path if kind == "jlink" else None,
-                openocd_path=path if kind == "openocd" else None,
-            )
-        except Exception as exc:
-            self._append_log_line(f"[ERROR] Probe detection failed: {exc}", "#ff6060")
+    def _resize_sections(self) -> None:
+        content = self._sections_scroll.widget()
+        if content is None:
             return
-        if not probes:
-            self._append_log_line("[INFO] No debug probes or probe tools detected.", "#888888")
-            return
-        for probe in probes:
-            self._append_log_line(
-                f"  {probe.get('probe', '')}  {probe.get('serial', '')}  "
-                f"{probe.get('details', '')}",
-                "#aaddff",
-            )
-        if kind not in PROBE_KINDS:
-            idx = self._probe_kind_combo.findText(probes[0].get("probe", ""))
-            if idx >= 0:
-                self._probe_kind_combo.setCurrentIndex(idx)
+        height = content.sizeHint().height()
+        self._sections_scroll.setMinimumHeight(min(height, _MAX_SECTIONS_HEIGHT))
+        self._sections_scroll.setMaximumHeight(height + 2)
 
-    @Slot()
-    def _refresh_serial_ports(self) -> None:
-        try:
-            from serial.tools.list_ports import comports
+    # ------------------------------------------------------------------
+    # RowHost
+    # ------------------------------------------------------------------
 
-            ports = [p.device for p in comports()]
-        except ImportError:
-            ports = []
-        current = self._serial_port_combo.currentText()
-        self._serial_port_combo.clear()
-        self._serial_port_combo.addItem("")
-        self._serial_port_combo.addItems(ports)
-        if current:
-            idx = self._serial_port_combo.findText(current)
-            self._serial_port_combo.setCurrentIndex(idx if idx >= 0 else 0)
+    def _all_rows(self) -> list[ChannelRow]:
+        return [row for section in self._sections for row in section.rows]
 
-    @Slot()
-    def _detect_can(self) -> None:
-        self._append_log_line("[INFO] Scanning for CAN hardware...", "#888888")
-        try:
-            configs = gather_all()
-        except Exception as exc:
-            self._append_log_line(f"[ERROR] Detection failed: {exc}", "#ff6060")
-            return
-        if not configs:
-            self._append_log_line("[INFO] No CAN hardware detected.", "#888888")
-            return
-        for cfg in configs:
-            self._append_log_line(
-                f"  {cfg.get('interface', '')}  {cfg.get('channel', '')}  {cfg.get('details', '')}",
-                "#aaddff",
-            )
-        first = configs[0]
-        iface = first.get("interface", "")
-        idx = self._can_iface_combo.findText(iface)
-        if idx >= 0:
-            self._can_iface_combo.setCurrentIndex(idx)
-        self._can_channel_edit.setText(first.get("channel", ""))
+    def used_ports(self, exclude: QWidget | None = None) -> set[int]:
+        ports: set[int] = set()
+        for row in self._all_rows():
+            if row is not exclude:
+                ports |= row.used_ports()
+        return ports
+
+    def used_devices(self, exclude: QWidget | None = None) -> set[str]:
+        devices: set[str] = set()
+        for row in self._all_rows():
+            if row is not exclude:
+                devices |= row.used_devices()
+        return devices
+
+    def log(self, text: str, color: str) -> None:
+        self._append_log_line(text, color)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    def _set_editing_enabled(self, enabled: bool) -> None:
+        for section in self._sections:
+            section.setEnabled(enabled)
+        self._bind_edit.setEnabled(enabled)
+        self._log_level_combo.setEnabled(enabled)
+
     def _build_config(self) -> BridgeConfig:
-        iface_text = self._can_iface_combo.currentText()
-        can_iface = iface_text if iface_text != "(disabled)" else None
-        serial_port_text = self._serial_port_combo.currentText().strip() or None
+        """Collect every enabled row; raises ``ValueError`` naming the bad field."""
         bind_address = self._bind_edit.text().strip() or "127.0.0.1"
-
-        return BridgeConfig(
-            serial_port=serial_port_text,
-            serial_baudrate=int(self._serial_baud_edit.text() or "921600"),
-            serial_tcp_port=int(self._serial_tcp_edit.text() or "5000"),
-            can_interface=can_iface,
-            can_channel=self._can_channel_edit.text().strip() or None,
-            can_bitrate=int(self._can_bitrate_edit.text() or "125000"),
-            can_tty_baudrate=int(self._can_tty_baud_edit.text() or "115200"),
-            can_tcp_port=int(self._can_tcp_edit.text() or "5001"),
-            bind_address=bind_address,
-            log_level=self._log_level_combo.currentText(),
-            probe=self._build_probe_config(bind_address),
+        config = BridgeConfig(
+            bind_address=bind_address, log_level=self._log_level_combo.currentText()
         )
-
-    def _build_probe_config(self, bind_address: str) -> ProbeConfig | None:
-        kind = self._probe_kind_combo.currentText()
-        if kind not in PROBE_KINDS:
-            return None
-
-        def _optional_int(edit: QLineEdit) -> int | None:
-            text = edit.text().strip()
-            return int(text) if text else None
-
-        configs = [
-            c.strip() for c in self._openocd_config_combo.currentText().split(";") if c.strip()
-        ]
-        search_dir = self._openocd_search_edit.text().strip()
-        return ProbeConfig(
-            kind="jlink" if kind == "jlink" else "openocd",
-            executable=self._probe_path_edit.text().strip() or None,
-            bind_address=bind_address,
-            gdb_port=_optional_int(self._probe_gdb_edit),
-            telnet_port=_optional_int(self._probe_telnet_edit),
-            speed_khz=_optional_int(self._probe_speed_edit),
-            device=self._jlink_device_edit.text().strip() or None,
-            interface=self._jlink_if_combo.currentText(),
-            serial_number=self._jlink_serial_edit.text().strip() or None,
-            configs=configs,
-            search_dirs=[search_dir] if search_dir else [],
-        )
+        for index, row in enumerate(self._serial_section.rows, start=1):
+            assert isinstance(row, SerialRow)
+            serial = _row_config(f"Serial #{index}", row.to_config)
+            if serial is not None:
+                config.serials.append(serial)
+        for index, row in enumerate(self._can_section.rows, start=1):
+            assert isinstance(row, CanRow)
+            can = _row_config(f"CAN bus #{index}", row.to_config)
+            if can is not None:
+                config.cans.append(can)
+        for index, row in enumerate(self._probe_section.rows, start=1):
+            assert isinstance(row, ProbeRow)
+            probe = _row_config(f"Debug probe #{index}", lambda r=row: r.to_config(bind_address))
+            if probe is not None:
+                config.probes.append(probe)
+        return config
 
     def _append_log_line(self, text: str, color: str) -> None:
         fmt = QTextCharFormat()

@@ -60,7 +60,7 @@ python -m portbridge --serial-port COM3
 | `--list-can` | — | Print detected CAN hardware and exit |
 | `--list-can --json` | — | Same output as JSON |
 
-## Debug probes (J-Link, OpenOCD)
+## Debug probes (J-Link, ST-LINK, OpenOCD)
 
 port-bridge can run the GDB server of a debug probe and expose it over TCP, so a client
 in Docker or on another machine can flash and debug the target with `gdb`. The firmware
@@ -71,6 +71,7 @@ The tool must be installed on the host:
 | `--probe` | Tool | Found via |
 |-----------|------|-----------|
 | `jlink` | SEGGER J-Link Software Pack (`JLinkGDBServerCL`) | `--probe-path`, `PATH`, `C:\Program Files\SEGGER\JLink*`, `/opt/SEGGER/JLink*`, `/Applications/SEGGER/JLink*` |
+| `stlink` | STMicroelectronics STM32CubeCLT or STM32CubeIDE (`ST-LINK_gdbserver`, plus STM32CubeProgrammer) | `--probe-path`, `PATH`, `C:\ST\STM32CubeCLT*`, `/opt/st/stm32cubeclt*`, `/opt/ST/STM32CubeCLT*`, STM32CubeIDE plugin folders |
 | `openocd` | OpenOCD (e.g. distro package, xPack OpenOCD on Windows) | `--probe-path`, `PATH` |
 
 ```bash
@@ -88,6 +89,12 @@ port-bridge --probe openocd \
 port-bridge --probe jlink --jlink-device TM4C123GH6PM
 port-bridge --probe jlink --jlink-device TM4C1294NCPDT \
     --jlink-interface JTAG --probe-speed 1000 --jlink-serial 801012345
+
+# ST-LINK (Nucleo / Discovery on-board or standalone) — GDB on :61234
+port-bridge --probe stlink
+port-bridge --probe stlink --stlink-serial 066DFF485550755187121723 \
+    --stlink-interface JTAG --probe-speed 1800 \
+    --stlink-programmer "C:\ST\STM32CubeCLT_1.16.0\STM32CubeProgrammer\bin"
 
 # Serial + CAN + probe from one process
 port-bridge --serial-port /dev/ttyACM0 \
@@ -111,27 +118,72 @@ arm-none-eabi-gdb firmware.elf -batch \
 arm-none-eabi-gdb firmware.elf -batch \
     -ex "target remote host.docker.internal:2331" \
     -ex "monitor reset" -ex load -ex "monitor reset" -ex "monitor go" -ex detach
+
+# ST-LINK
+arm-none-eabi-gdb firmware.elf -batch \
+    -ex "target extended-remote host.docker.internal:61234" \
+    -ex "monitor reset" -ex load -ex "monitor reset" -ex detach
 ```
 
-The telnet port (`4444` for OpenOCD, `2333` for J-Link) is exposed as well. J-Link can only
-listen on loopback or on all interfaces: any `--bind` other than loopback makes it listen on
-all interfaces.
+The telnet port (`4444` for OpenOCD, `2333` for J-Link) is exposed as well; ST-LINK_gdbserver
+has no telnet port. J-Link and ST-LINK can only listen on loopback or on all interfaces: any
+`--bind` other than loopback makes them listen on all interfaces.
+
+ST-LINK_gdbserver needs the STM32CubeProgrammer `bin` folder. port-bridge finds it next to
+ST-LINK_gdbserver (STM32CubeCLT and STM32CubeIDE ship both) or in the standard
+STM32CubeProgrammer install folder; pass `--stlink-programmer` to override.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--probe` | — | `jlink` or `openocd`. Omit to disable. |
+| `--probe` | — | `jlink`, `stlink` or `openocd`. Omit to disable. |
 | `--probe-path` | auto | Tool executable or its folder |
-| `--probe-gdb-port` | 2331 / 3333 | GDB server TCP port (jlink / openocd) |
-| `--probe-telnet-port` | 2333 / 4444 | Telnet TCP port (jlink / openocd) |
-| `--probe-speed` | 4000 / cfg | Interface speed in kHz (jlink / openocd config default) |
+| `--probe-gdb-port` | 2331 / 61234 / 3333 | GDB server TCP port (jlink / stlink / openocd) |
+| `--probe-telnet-port` | 2333 / — / 4444 | Telnet TCP port (jlink / stlink has none / openocd) |
+| `--probe-speed` | 4000 / tool / cfg | Interface speed in kHz (jlink / ST-LINK default / openocd config default) |
 | `--jlink-device` | — | Target device, e.g. `TM4C123GH6PM` (required for jlink) |
 | `--jlink-interface` | SWD | `SWD` or `JTAG` |
 | `--jlink-serial` | — | Select a J-Link by USB serial number |
+| `--stlink-interface` | SWD | `SWD` or `JTAG` |
+| `--stlink-serial` | — | Select an ST-LINK by serial number |
+| `--stlink-programmer` | auto | STM32CubeProgrammer `bin` folder |
 | `--openocd-board` | — | Preset: `ek-tm4c123gxl`, `ek-tm4c1294xl` |
 | `--openocd-config` | — | Config script (`-f`), repeatable |
 | `--openocd-search` | — | Script search directory (`-s`), repeatable |
 | `--openocd-command` | — | Extra command (`-c`) after the configs, repeatable |
 | `--list-probes` | — | Print detected probes and tools and exit (`--json` supported) |
+
+## Multiple serial ports, CAN buses and probes
+
+Each kind of channel can run any number of times. The plain flags (`--serial-port`,
+`--can-interface`, `--probe`) define the first one; repeat `--add-serial`, `--add-can` and
+`--add-probe` for the rest. Each takes `key=value` pairs separated by commas:
+
+```bash
+port-bridge \
+    --serial-port COM3 \
+    --add-serial port=COM4,baud=115200,tcp=5002 \
+    --can-interface gs_usb --can-channel 0 \
+    --add-can interface=gs_usb,channel=1,bitrate=500000,tcp=5003 \
+    --probe stlink --stlink-serial 066DFF485550755187121723 \
+    --add-probe kind=stlink,serial=0670FF485550755187121724,gdb=61244 \
+    --add-probe kind=jlink,device=TM4C123GH6PM,serial=801012345
+```
+
+| Flag | Keys |
+|------|------|
+| `--add-serial` | `port` (required), `baud`, `tcp` |
+| `--add-can` | `interface` (required), `channel`, `bitrate`, `tcp`, `tty-baud` |
+| `--add-probe` | `kind` (required: `jlink`, `stlink`, `openocd`), `path`, `gdb`, `telnet`, `speed`, `device`, `interface`, `serial`, `programmer`, `board`, `config`, `search` (`config` and `search` repeat) |
+
+Every channel needs its own TCP port and device. port-bridge refuses to start when two
+channels share a TCP port, a serial device or a CAN channel. Two probes of the same kind also
+need different `gdb` (and `telnet`) ports and should name a `serial` so each server picks its
+own probe.
+
+In the GUI, the **+ Add serial port**, **+ Add CAN bus** and **+ Add debug probe** buttons
+add a row to each section and **−** removes one. A new row starts on a free TCP port. A second
+probe of the same type starts on ports offset by 10, and **Detect probes** fills in the serial
+number of a probe no other row is using.
 
 ## GUI
 
@@ -143,8 +195,9 @@ python -m portbridge.gui
 
 The GUI window shows:
 
-- **Configuration panel** — serial port, baudrate, CAN interface/channel/bitrate, TCP ports, bind address
-- **Debug probe panel** — J-Link or OpenOCD, J-Link device/interface/serial, OpenOCD config (TM4C LaunchPad presets), speed, GDB/telnet ports, tool path, **Detect probes**
+- **Serial and CAN sections** — one row per serial port or CAN bus (port, baudrate, CAN interface/channel/bitrate, TCP port); **+ Add serial port** / **+ Add CAN bus** add more, **−** removes one
+- **Debug probes section** — one row per probe: J-Link, ST-LINK or OpenOCD, J-Link device/interface/serial, ST-LINK interface/serial/STM32CubeProgrammer folder, OpenOCD config (TM4C LaunchPad presets), speed, GDB/telnet ports, tool path, **Detect probes**; **+ Add debug probe** adds more
+- **General** — bind address and log level
 - **Status row** — green/red indicators for serial bridge, CAN bridge and debug probe
 - **Start / Stop** button
 - **Log panel** — scrolling log of all bridge events (INFO level by default)
@@ -156,10 +209,13 @@ The GUI window shows:
 2. Select your serial port from the dropdown (auto-detected) or type it in.
 3. Select your CAN interface and channel (or leave blank to disable that bridge).
 4. Optionally select a debug probe (`jlink` needs a device name such as `TM4C123GH6PM`;
-   `openocd` needs a config such as `board/ek-tm4c123gxl.cfg`).
-5. Adjust TCP ports if the defaults (5000/5001, 2331/3333) conflict with existing services.
-6. Click **Start**. Status indicators turn green when the bridge is listening.
-7. Click **Stop** to shut down cleanly. Hardware is released immediately.
+   `stlink` works out of the box with STM32CubeCLT installed; `openocd` needs a config such
+   as `board/ek-tm4c123gxl.cfg`).
+5. Use the **+ Add …** buttons for more serial ports, CAN buses or probes. New rows pick free
+   TCP ports; the bridge refuses to start if two rows share a port or device.
+6. Adjust TCP ports if the defaults (5000/5001, 2331/61234/3333) conflict with existing services.
+7. Click **Start**. Status indicators turn green when the bridge is listening.
+8. Click **Stop** to shut down cleanly. Hardware is released immediately.
 
 ## Using from Docker
 
