@@ -1,4 +1,4 @@
-"""DebugProbeServer: runs a J-Link or OpenOCD GDB server as a managed child process.
+"""DebugProbeServer: runs a J-Link, ST-LINK or OpenOCD GDB server as a managed child process.
 
 The GDB server itself owns the TCP ports; port-bridge only locates the tool, starts it
 with ports and bind address matching the rest of the bridge, forwards its output to
@@ -13,6 +13,7 @@ exist on the host::
 
 Supported probes:
     - SEGGER J-Link (J-Link Software Pack must be installed): kind=jlink
+    - ST-LINK (ST-LINK_gdbserver from STM32CubeCLT or STM32CubeIDE): kind=stlink
     - OpenOCD (any adapter it supports, e.g. TI ICDI on Tiva LaunchPads): kind=openocd
 """
 
@@ -38,15 +39,18 @@ from .server_errors import HardwareUnavailableError, PortUnavailableError, ToolN
 
 logger = logging.getLogger(__name__)
 
-ProbeKind = Literal["jlink", "openocd"]
-PROBE_KINDS: tuple[ProbeKind, ...] = ("jlink", "openocd")
+ProbeKind = Literal["jlink", "stlink", "openocd"]
+PROBE_KINDS: tuple[ProbeKind, ...] = ("jlink", "stlink", "openocd")
 
-DEFAULT_PORTS: dict[str, tuple[int, int]] = {
+# (GDB port, telnet port); ST-LINK_gdbserver has no telnet interface.
+DEFAULT_PORTS: dict[str, tuple[int, int | None]] = {
     "jlink": (2331, 2333),
+    "stlink": (61234, None),
     "openocd": (3333, 4444),
 }
 DEFAULT_JLINK_SPEED_KHZ = 4000
 JLINK_INTERFACES = ("SWD", "JTAG")
+STLINK_INTERFACES = ("SWD", "JTAG")
 
 OPENOCD_PRESETS: dict[str, str] = {
     "ek-tm4c123gxl": "board/ek-tm4c123gxl.cfg",
@@ -55,20 +59,25 @@ OPENOCD_PRESETS: dict[str, str] = {
 
 _READY_PATTERNS: dict[str, re.Pattern[str]] = {
     "jlink": re.compile(r"Waiting for GDB connection", re.IGNORECASE),
+    "stlink": re.compile(r"Waiting for debugger connection", re.IGNORECASE),
     "openocd": re.compile(r"Listening on port \d+ for gdb connections", re.IGNORECASE),
 }
 
-_DISPLAY_NAMES: dict[str, str] = {"jlink": "J-Link GDB server", "openocd": "OpenOCD"}
+_DISPLAY_NAMES: dict[str, str] = {
+    "jlink": "J-Link GDB server",
+    "stlink": "ST-LINK GDB server",
+    "openocd": "OpenOCD",
+}
 
 # (vendor id, product id or None for any) -> (probe kind, description)
 _USB_PROBES: dict[tuple[int, int | None], tuple[str, str]] = {
     (0x1CBE, 0x00FD): ("openocd", "TI Stellaris/Tiva In-Circuit Debug Interface (ICDI)"),
     (0x0451, 0xBEF3): ("openocd", "TI XDS110"),
-    (0x0483, 0x3748): ("openocd", "ST-LINK/V2"),
-    (0x0483, 0x374B): ("openocd", "ST-LINK/V2-1"),
-    (0x0483, 0x374E): ("openocd", "STLINK-V3"),
-    (0x0483, 0x374F): ("openocd", "STLINK-V3"),
-    (0x0483, 0x3753): ("openocd", "STLINK-V3"),
+    (0x0483, 0x3748): ("stlink", "ST-LINK/V2"),
+    (0x0483, 0x374B): ("stlink", "ST-LINK/V2-1"),
+    (0x0483, 0x374E): ("stlink", "STLINK-V3"),
+    (0x0483, 0x374F): ("stlink", "STLINK-V3"),
+    (0x0483, 0x3753): ("stlink", "STLINK-V3"),
     (0x1366, None): ("jlink", "SEGGER J-Link"),
 }
 
@@ -83,10 +92,12 @@ class ProbeConfig:
     gdb_port: int | None = None
     telnet_port: int | None = None
     speed_khz: int | None = None
-    # J-Link
+    # J-Link / ST-LINK
     device: str | None = None
     interface: str = "SWD"
     serial_number: str | None = None
+    # ST-LINK: STM32CubeProgrammer "bin" folder (auto-detected when None)
+    programmer_path: str | None = None
     # OpenOCD
     configs: list[str] = field(default_factory=list)
     search_dirs: list[str] = field(default_factory=list)
@@ -97,7 +108,7 @@ class ProbeConfig:
         return self.gdb_port if self.gdb_port is not None else DEFAULT_PORTS[self.kind][0]
 
     @property
-    def resolved_telnet_port(self) -> int:
+    def resolved_telnet_port(self) -> int | None:
         return self.telnet_port if self.telnet_port is not None else DEFAULT_PORTS[self.kind][1]
 
 
@@ -173,7 +184,81 @@ def _find_tool(
     raise ToolNotFoundError(f"{display_name} ('{exe_name}') not found. {hint}")
 
 
+_STLINK_PLUGIN = "com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.*"
+_CUBEPROGRAMMER_PLUGIN = "com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.*"
+
+
+def _glob_dirs(patterns: list[Path]) -> list[Path]:
+    found: list[Path] = []
+    for pattern in patterns:
+        anchor = Path(pattern.anchor or ".")
+        try:
+            found.extend(p for p in anchor.glob(str(pattern.relative_to(anchor))) if p.is_dir())
+        except (OSError, ValueError):
+            continue
+    return sorted(found, key=lambda p: _natural_key(str(p)), reverse=True)
+
+
+def _st_roots() -> list[Path]:
+    if sys.platform == "win32":
+        return [
+            Path(r"C:\ST"),
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "STMicroelectronics",
+        ]
+    if sys.platform == "darwin":
+        return [Path("/opt/ST"), Path("/Applications")]
+    return [Path("/opt/st"), Path("/opt/ST")]
+
+
+def _stlink_install_dirs() -> list[Path]:
+    patterns: list[Path] = []
+    for root in _st_roots():
+        patterns += [
+            root / "STM32CubeCLT*" / "STLink-gdb-server" / "bin",
+            root / "stm32cubeclt*" / "STLink-gdb-server" / "bin",
+            root / "STM32CubeIDE*" / "STM32CubeIDE" / "plugins" / _STLINK_PLUGIN / "tools" / "bin",
+            root / "stm32cubeide*" / "plugins" / _STLINK_PLUGIN / "tools" / "bin",
+            root
+            / "STM32CubeIDE*.app"
+            / "Contents"
+            / "Eclipse"
+            / "plugins"
+            / _STLINK_PLUGIN
+            / "tools"
+            / "bin",
+        ]
+    return _glob_dirs(patterns)
+
+
+def _cubeprogrammer_install_dirs() -> list[Path]:
+    if sys.platform == "win32":
+        roots = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")),
+        ]
+        return [
+            r / "STMicroelectronics" / "STM32Cube" / "STM32CubeProgrammer" / "bin" for r in roots
+        ]
+    if sys.platform == "darwin":
+        return [
+            Path(
+                "/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/"
+                "STM32CubeProgrammer.app/Contents/MacOs/bin"
+            )
+        ]
+    return [
+        Path.home() / "STMicroelectronics" / "STM32Cube" / "STM32CubeProgrammer" / "bin",
+        Path("/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin"),
+        Path("/opt/st/STM32CubeProgrammer/bin"),
+    ]
+
+
 _JLINK_HINT = "Install the SEGGER J-Link Software Pack or pass its location with --probe-path."
+_STLINK_HINT = "Install STM32CubeCLT (or STM32CubeIDE) or pass its location with --probe-path."
+_CUBEPROGRAMMER_HINT = (
+    "Install STM32CubeProgrammer (bundled with STM32CubeCLT) or pass its bin folder "
+    "with --stlink-programmer."
+)
 _OPENOCD_HINT = "Install OpenOCD and put it on PATH, or pass its location with --probe-path."
 
 
@@ -200,6 +285,57 @@ def find_jlink_commander(override: str | None = None) -> str:
     return _find_tool(exe_name, override, _jlink_install_dirs(), "J-Link Commander", _JLINK_HINT)
 
 
+def _stlink_exe_name() -> str:
+    return "ST-LINK_gdbserver.exe" if sys.platform == "win32" else "ST-LINK_gdbserver"
+
+
+def _cubeprogrammer_exe_name() -> str:
+    return "STM32_Programmer_CLI.exe" if sys.platform == "win32" else "STM32_Programmer_CLI"
+
+
+def find_stlink_gdb_server(override: str | None = None) -> str:
+    """Locate ST's ST-LINK_gdbserver executable."""
+    return _find_tool(
+        _stlink_exe_name(),
+        override,
+        _stlink_install_dirs(),
+        "ST-LINK GDB server",
+        _STLINK_HINT,
+    )
+
+
+def find_stm32cubeprogrammer(override: str | None = None, gdbserver: str | None = None) -> str:
+    """Locate the STM32CubeProgrammer ``bin`` folder that ST-LINK_gdbserver needs (``-cp``).
+
+    Looks next to ``gdbserver`` first (STM32CubeCLT and STM32CubeIDE ship both tools side by
+    side), then in the standalone STM32CubeProgrammer install locations.
+    """
+    exe_name = _cubeprogrammer_exe_name()
+    if override:
+        path = Path(override)
+        if path.is_file():
+            return str(path.parent)
+        if (path / exe_name).is_file():
+            return str(path)
+        raise ToolNotFoundError(f"STM32CubeProgrammer not found at '{override}'")
+
+    candidates: list[Path] = []
+    if gdbserver:
+        bin_dir = Path(gdbserver).resolve().parent
+        candidates.append(bin_dir.parent.parent / "STM32CubeProgrammer" / "bin")
+        plugins = bin_dir.parent.parent.parent
+        candidates += _glob_dirs([plugins / _CUBEPROGRAMMER_PLUGIN / "tools" / "bin"])
+    found = shutil.which(exe_name)
+    if found:
+        candidates.append(Path(found).parent)
+    candidates += _cubeprogrammer_install_dirs()
+
+    for directory in candidates:
+        if (directory / exe_name).is_file():
+            return str(directory)
+    raise ToolNotFoundError(f"STM32CubeProgrammer ('{exe_name}') not found. {_CUBEPROGRAMMER_HINT}")
+
+
 def find_openocd(override: str | None = None) -> str:
     """Locate the OpenOCD executable."""
     exe_name = "openocd.exe" if sys.platform == "win32" else "openocd"
@@ -209,6 +345,8 @@ def find_openocd(override: str | None = None) -> str:
 def find_probe_tool(cfg: ProbeConfig) -> str:
     if cfg.kind == "jlink":
         return find_jlink_gdb_server(cfg.executable)
+    if cfg.kind == "stlink":
+        return find_stlink_gdb_server(cfg.executable)
     return find_openocd(cfg.executable)
 
 
@@ -252,6 +390,22 @@ def build_jlink_command(cfg: ProbeConfig, executable: str) -> list[str]:
     return cmd
 
 
+def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str) -> list[str]:
+    interface = cfg.interface.upper()
+    if interface not in STLINK_INTERFACES:
+        raise ValueError(f"ST-LINK interface must be SWD or JTAG, got '{cfg.interface}'")
+
+    # -e keeps the server alive across GDB sessions, matching J-Link and OpenOCD behaviour.
+    cmd = [executable, "-p", str(cfg.resolved_gdb_port), "-cp", programmer_dir, "-e"]
+    if interface == "SWD":
+        cmd.append("-d")
+    if cfg.serial_number:
+        cmd += ["-i", cfg.serial_number]
+    if cfg.speed_khz:
+        cmd += ["--frequency", str(cfg.speed_khz)]
+    return cmd
+
+
 def build_openocd_command(cfg: ProbeConfig, executable: str) -> list[str]:
     if not cfg.configs:
         raise ValueError(
@@ -284,6 +438,9 @@ def build_openocd_command(cfg: ProbeConfig, executable: str) -> list[str]:
 def build_probe_command(cfg: ProbeConfig, executable: str) -> list[str]:
     if cfg.kind == "jlink":
         return build_jlink_command(cfg, executable)
+    if cfg.kind == "stlink":
+        programmer_dir = find_stm32cubeprogrammer(cfg.programmer_path, executable)
+        return build_stlink_command(cfg, executable, programmer_dir)
     return build_openocd_command(cfg, executable)
 
 
@@ -347,7 +504,9 @@ class DebugProbeServer:
         self._stop_timeout = stop_timeout
         self._poll_interval = poll_interval
         self._name = _DISPLAY_NAMES[config.kind]
-        self._output_logger = logging.getLogger(f"portbridge.probe.{config.kind}")
+        self._output_logger = logging.getLogger(
+            f"portbridge.probe.{config.kind}.{config.resolved_gdb_port}"
+        )
         self._process: Any = None
         self._pump_task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
@@ -369,15 +528,16 @@ class DebugProbeServer:
             raise HardwareUnavailableError(str(exc)) from exc
 
         host = _connect_host(cfg.bind_address)
-        for port in (cfg.resolved_gdb_port, cfg.resolved_telnet_port):
-            if await self._port_probe(host, port):
+        telnet_port = cfg.resolved_telnet_port
+        for port in (cfg.resolved_gdb_port, telnet_port):
+            if port is not None and await self._port_probe(host, port):
                 raise PortUnavailableError(
                     f"Cannot start {self._name}: TCP port {port} is already in use"
                 )
 
-        if cfg.kind == "jlink" and not _is_loopback(cfg.bind_address):
+        if cfg.kind in ("jlink", "stlink") and not _is_loopback(cfg.bind_address):
             logger.warning(
-                "J-Link GDB server cannot bind to a single address; listening on all interfaces"
+                "%s cannot bind to a single address; listening on all interfaces", self._name
             )
 
         logger.info("Starting %s: %s", self._name, subprocess.list2cmdline(argv))
@@ -394,7 +554,7 @@ class DebugProbeServer:
 
         self._pump_task = asyncio.create_task(self._pump_output())
         try:
-            done = await self._wait_until_ready(host, cfg.resolved_telnet_port)
+            done = await self._wait_until_ready(host, telnet_port)
         except BaseException:
             await self._terminate()
             raise
@@ -415,19 +575,24 @@ class DebugProbeServer:
             )
 
         self._running = True
+        telnet_text = f", telnet port {telnet_port}" if telnet_port is not None else ""
         logger.info(
-            "%s listening on %s: GDB port %d, telnet port %d",
+            "%s listening on %s: GDB port %d%s",
             self._name,
             cfg.bind_address,
             cfg.resolved_gdb_port,
-            cfg.resolved_telnet_port,
+            telnet_text,
         )
 
-    async def _wait_until_ready(self, host: str, port: int) -> bool:
-        ready_task = asyncio.create_task(self._ready.wait())
-        exited_task = asyncio.create_task(self._exited.wait())
-        port_task = asyncio.create_task(self._wait_for_port(host, port))
-        waiters = {ready_task, exited_task, port_task}
+    async def _wait_until_ready(self, host: str, port: int | None) -> bool:
+        # The GDB port is never polled: some servers accept only one connection and would
+        # treat the probe as a debugger session. Without a telnet port, rely on the output.
+        waiters: set[asyncio.Task[Any]] = {
+            asyncio.create_task(self._ready.wait()),
+            asyncio.create_task(self._exited.wait()),
+        }
+        if port is not None:
+            waiters.add(asyncio.create_task(self._wait_for_port(host, port)))
         try:
             done, _ = await asyncio.wait(
                 waiters, timeout=self._startup_timeout, return_when=asyncio.FIRST_COMPLETED
@@ -658,15 +823,34 @@ def detect_usb_probes() -> list[dict[str, Any]]:
     return results
 
 
+def detect_stlink_tool(executable: str | None = None) -> list[dict[str, Any]]:
+    """Report the ST-LINK GDB server installation (probes themselves come from the USB scan)."""
+    try:
+        server = find_stlink_gdb_server(executable)
+    except ToolNotFoundError as exc:
+        logger.debug("%s", exc)
+        return []
+    return [
+        {
+            "probe": "stlink",
+            "serial": "",
+            "details": f"ST-LINK_gdbserver at {server}",
+            "source": "tool",
+        }
+    ]
+
+
 def list_probes(
-    jlink_path: str | None = None, openocd_path: str | None = None
+    jlink_path: str | None = None,
+    openocd_path: str | None = None,
+    stlink_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate installed tools and connected debug probes."""
     jlinks = detect_jlink_probes(jlink_path)
     usb_probes = detect_usb_probes()
     if jlinks:
         usb_probes = [p for p in usb_probes if p["probe"] != "jlink"]
-    return jlinks + detect_openocd_tool(openocd_path) + usb_probes
+    return jlinks + detect_stlink_tool(stlink_path) + detect_openocd_tool(openocd_path) + usb_probes
 
 
 PROBE_COLUMNS = (

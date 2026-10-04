@@ -12,6 +12,7 @@ from portbridge.probe_server import (
     ProbeConfig,
     build_jlink_command,
     build_openocd_command,
+    build_stlink_command,
 )
 from portbridge.server_errors import (
     HardwareUnavailableError,
@@ -74,6 +75,12 @@ def openocd_config(**overrides):
 
 def jlink_config(**overrides):
     values = {"kind": "jlink", "device": "TM4C123GH6PM"}
+    values.update(overrides)
+    return ProbeConfig(**values)
+
+
+def stlink_config(**overrides):
+    values = {"kind": "stlink"}
     values.update(overrides)
     return ProbeConfig(**values)
 
@@ -192,6 +199,39 @@ class TestCommandBuilders(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_openocd_command(openocd_config(configs=[]), "openocd")
 
+    def test_stlink_defaults_to_swd_on_default_port(self):
+        cmd = build_stlink_command(stlink_config(), "ST-LINK_gdbserver", "/cp/bin")
+
+        self.assertEqual(cmd, ["ST-LINK_gdbserver", "-p", "61234", "-cp", "/cp/bin", "-e", "-d"])
+
+    def test_stlink_jtag_serial_speed_and_port(self):
+        cfg = stlink_config(
+            interface="jtag", serial_number="0670FF48", speed_khz=1800, gdb_port=61244
+        )
+
+        cmd = build_stlink_command(cfg, "st", "/cp")
+
+        self.assertNotIn("-d", cmd)
+        self.assertEqual(cmd[cmd.index("-p") + 1], "61244")
+        self.assertEqual(cmd[cmd.index("-i") + 1], "0670FF48")
+        self.assertEqual(cmd[cmd.index("--frequency") + 1], "1800")
+
+    def test_stlink_rejects_unknown_interface(self):
+        with self.assertRaises(ValueError):
+            build_stlink_command(stlink_config(interface="SPI"), "st", "/cp")
+
+    def test_stlink_has_no_telnet_port(self):
+        self.assertIsNone(stlink_config().resolved_telnet_port)
+
+    def test_build_probe_command_resolves_cubeprogrammer(self):
+        with mock.patch.object(
+            probe_server, "find_stm32cubeprogrammer", return_value="/cp/bin"
+        ) as finder:
+            cmd = probe_server.build_probe_command(stlink_config(programmer_path="/x"), "st")
+
+        finder.assert_called_once_with("/x", "st")
+        self.assertEqual(cmd[cmd.index("-cp") + 1], "/cp/bin")
+
 
 class TestToolDiscovery(unittest.TestCase):
     def setUp(self):
@@ -263,6 +303,72 @@ class TestToolDiscovery(unittest.TestCase):
 
         self.assertEqual([d.name for d in dirs], ["JLink", "JLink_V810a", "JLink_V794"])
 
+    def test_stlink_install_dir_fallback(self):
+        bin_dir = self.tmp / "STM32CubeCLT_1.16.0" / "STLink-gdb-server" / "bin"
+        with (
+            mock.patch.object(sys, "platform", "linux"),
+            mock.patch.object(probe_server.shutil, "which", return_value=None),
+            mock.patch.object(probe_server, "_st_roots", return_value=[self.tmp]),
+        ):
+            exe = self._make_exe(bin_dir / "ST-LINK_gdbserver")
+
+            found = probe_server.find_stlink_gdb_server()
+
+        self.assertEqual(Path(found), exe)
+
+    def test_stlink_not_found_raises_with_hint(self):
+        with (
+            mock.patch.object(probe_server.shutil, "which", return_value=None),
+            mock.patch.object(probe_server, "_st_roots", return_value=[self.tmp]),
+            self.assertRaises(ToolNotFoundError) as ctx,
+        ):
+            probe_server.find_stlink_gdb_server()
+
+        self.assertIn("STM32CubeCLT", str(ctx.exception))
+
+    def test_cubeprogrammer_found_next_to_cubeclt_gdbserver(self):
+        clt = self.tmp / "STM32CubeCLT"
+        with mock.patch.object(sys, "platform", "linux"):
+            server = self._make_exe(clt / "STLink-gdb-server" / "bin" / "ST-LINK_gdbserver")
+            self._make_exe(clt / "STM32CubeProgrammer" / "bin" / "STM32_Programmer_CLI")
+
+            found = probe_server.find_stm32cubeprogrammer(None, str(server))
+
+        self.assertEqual(Path(found), (clt / "STM32CubeProgrammer" / "bin").resolve())
+
+    def test_cubeprogrammer_found_in_cubeide_plugins(self):
+        plugins = self.tmp / "plugins"
+        stlink = "com.st.stm32cube.ide.mcu.externaltools.stlink-gdb-server.linux64_2.1.0"
+        cubeprog = "com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.1.0"
+        with mock.patch.object(sys, "platform", "linux"):
+            server = self._make_exe(plugins / stlink / "tools" / "bin" / "ST-LINK_gdbserver")
+            self._make_exe(plugins / cubeprog / "tools" / "bin" / "STM32_Programmer_CLI")
+
+            found = probe_server.find_stm32cubeprogrammer(None, str(server))
+
+        self.assertEqual(Path(found).resolve(), (plugins / cubeprog / "tools" / "bin").resolve())
+
+    def test_cubeprogrammer_override_folder_or_file(self):
+        with mock.patch.object(sys, "platform", "linux"):
+            cli = self._make_exe(self.tmp / "bin" / "STM32_Programmer_CLI")
+
+            self.assertEqual(
+                probe_server.find_stm32cubeprogrammer(str(cli.parent)), str(cli.parent)
+            )
+            self.assertEqual(probe_server.find_stm32cubeprogrammer(str(cli)), str(cli.parent))
+
+    def test_cubeprogrammer_missing_raises(self):
+        with (
+            mock.patch.object(sys, "platform", "linux"),
+            mock.patch.object(probe_server.shutil, "which", return_value=None),
+            mock.patch.object(probe_server, "_cubeprogrammer_install_dirs", return_value=[]),
+            self.assertRaises(ToolNotFoundError),
+        ):
+            probe_server.find_stm32cubeprogrammer(None, str(self.tmp / "a" / "b" / "st"))
+
+        with self.assertRaises(ToolNotFoundError):
+            probe_server.find_stm32cubeprogrammer(str(self.tmp / "missing"))
+
     def test_windows_executable_names(self):
         with (
             mock.patch.object(sys, "platform", "win32"),
@@ -276,6 +382,25 @@ class TestToolDiscovery(unittest.TestCase):
 
 
 class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
+    async def test_stlink_ready_line_without_telnet_port(self):
+        probed = []
+
+        async def port_probe(host, port):
+            probed.append(port)
+            return False
+
+        proc = FakeProcess(
+            ["STMicroelectronics ST-LINK GDB server", "Waiting for debugger connection..."]
+        )
+        server = make_server(stlink_config(), proc, port_probe=port_probe)
+
+        with mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"):
+            await server.start()
+
+        self.assertTrue(server.is_running)
+        self.assertEqual(probed, [61234])
+        await server.stop()
+
     async def test_start_waits_for_ready_line_and_logs_output(self):
         proc = FakeProcess(
             [
@@ -297,7 +422,7 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["stdout"], asyncio.subprocess.PIPE)
         self.assertEqual(kwargs["stderr"], asyncio.subprocess.STDOUT)
         self.assertEqual(kwargs["stdin"], asyncio.subprocess.DEVNULL)
-        self.assertIn("WARNING:portbridge.probe.openocd:Warn : slow", logs.output)
+        self.assertIn("WARNING:portbridge.probe.openocd.3333:Warn : slow", logs.output)
 
         await server.stop()
 
@@ -529,8 +654,25 @@ class TestProbeDiscovery(unittest.TestCase):
             mock.patch.object(probe_server, "detect_jlink_probes", return_value=[jlink]),
             mock.patch.object(probe_server, "detect_usb_probes", return_value=[usb_jlink, icdi]),
             mock.patch.object(probe_server, "detect_openocd_tool", return_value=[]),
+            mock.patch.object(probe_server, "detect_stlink_tool", return_value=[]),
         ):
             self.assertEqual(probe_server.list_probes(), [jlink, icdi])
+
+    def test_detect_stlink_tool(self):
+        with mock.patch.object(probe_server, "find_stlink_gdb_server", return_value="/st/gdb"):
+            probes = probe_server.detect_stlink_tool()
+
+        self.assertEqual(probes[0]["probe"], "stlink")
+        self.assertIn("/st/gdb", probes[0]["details"])
+
+        with mock.patch.object(
+            probe_server, "find_stlink_gdb_server", side_effect=ToolNotFoundError("x")
+        ):
+            self.assertEqual(probe_server.detect_stlink_tool(), [])
+
+    def test_usb_stlink_ids_map_to_stlink_kind(self):
+        for pid in (0x3748, 0x374B, 0x374E, 0x374F, 0x3753):
+            self.assertEqual(probe_server._USB_PROBES[(0x0483, pid)][0], "stlink")
 
     def test_format_probe_table(self):
         table = probe_server.format_probe_table(
