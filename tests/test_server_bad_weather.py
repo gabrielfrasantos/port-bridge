@@ -894,6 +894,21 @@ class TestBridgeServerMultipleChannels(unittest.IsolatedAsyncioTestCase):
         serial_cls.assert_not_called()
         self.assertIn("TCP port 5000 is used by serial COM3 and serial COM4", logs.output[0])
 
+    async def test_out_of_range_port_exits_before_starting_anything(self):
+        serial_cls = mock.Mock()
+        args = probe_args(probe=None, serial_port="COM3", serial_tcp_port=70000)
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=args),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", serial_cls),
+            self.assertLogs(bridge_server.logger, level="ERROR") as logs,
+            self.assertRaises(SystemExit),
+        ):
+            await bridge_server.main()
+
+        serial_cls.assert_not_called()
+        self.assertIn("TCP port 70000 is outside 1-65535", logs.output[0])
+
     async def test_invalid_add_spec_exits(self):
         args = probe_args(probe=None, add_can=["interface=socketcan"])
 

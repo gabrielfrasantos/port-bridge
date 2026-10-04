@@ -401,6 +401,31 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probed, [61234])
         await server.stop()
 
+    async def test_stlink_accepts_alternative_ready_lines(self):
+        for line in ("Waiting for connection on port 61234...", "Listening at *:61234..."):
+            with self.subTest(line=line):
+                server = make_server(stlink_config(), FakeProcess([line]))
+
+                with mock.patch.object(
+                    probe_server, "find_stm32cubeprogrammer", return_value="/cp"
+                ):
+                    await server.start()
+
+                self.assertTrue(server.is_running)
+                await server.stop()
+
+    async def test_stlink_warns_that_bind_is_not_applied(self):
+        server = make_server(stlink_config(), FakeProcess(["Waiting for debugger connection..."]))
+
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            self.assertLogs(probe_server.logger, level="WARNING") as logs,
+        ):
+            await server.start()
+
+        self.assertIn("no bind option", logs.output[0])
+        await server.stop()
+
     async def test_start_waits_for_ready_line_and_logs_output(self):
         proc = FakeProcess(
             [

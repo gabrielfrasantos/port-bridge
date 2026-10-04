@@ -159,8 +159,11 @@ arm-none-eabi-gdb firmware.elf -batch \
 ```
 
 The telnet port (`4444` for OpenOCD, `2333` for J-Link) is exposed as well; ST-LINK_gdbserver
-has no telnet port. J-Link and ST-LINK can only listen on loopback or on all interfaces: any
-`--bind` other than loopback makes them listen on all interfaces.
+has no telnet port. J-Link can only listen on loopback or on all interfaces: any `--bind` other
+than loopback makes it listen on all interfaces. ST-LINK_gdbserver has no bind option, so
+`--bind` is not applied to it: its GDB port listens wherever the tool chooses, which may include
+other machines on the network. port-bridge logs a warning when it starts one; use a firewall if
+the port must stay private.
 
 ST-LINK_gdbserver needs the STM32CubeProgrammer `bin` folder. port-bridge finds it next to
 ST-LINK_gdbserver (STM32CubeCLT and STM32CubeIDE ship both) or in the standard
@@ -209,14 +212,15 @@ port-bridge \
 | `--add-probe` | `kind` (required: `jlink`, `stlink`, `openocd`), `path`, `gdb`, `telnet`, `speed`, `device`, `interface`, `serial`, `programmer`, `board`, `config`, `search` (`config` and `search` repeat) |
 
 Every channel needs its own TCP port and device. port-bridge refuses to start when two
-channels share a TCP port, a serial device or a CAN channel. Two probes of the same kind also
+channels share a TCP port, a serial device or a CAN channel (an `slcan` channel counts as its
+serial device), or when a TCP port is outside 1-65535 or a rate is not positive. Two probes of the same kind also
 need different `gdb` (and `telnet`) ports and should name a `serial` so each server picks its
 own probe.
 
 In the GUI, the **+ Add serial port**, **+ Add CAN bus** and **+ Add debug probe** buttons
 add a row to each section and **−** removes one. A new row starts on a free TCP port. A second
 probe of the same type starts on ports offset by 10, and **Detect probes** fills in the serial
-number of a probe no other row is using.
+number of a probe no other row is using, so each row stays on its own probe.
 
 ## Wire protocol
 

@@ -59,7 +59,9 @@ OPENOCD_PRESETS: dict[str, str] = {
 
 _READY_PATTERNS: dict[str, re.Pattern[str]] = {
     "jlink": re.compile(r"Waiting for GDB connection", re.IGNORECASE),
-    "stlink": re.compile(r"Waiting for debugger connection", re.IGNORECASE),
+    # ST-LINK_gdbserver prints "Waiting for debugger connection..." and "Waiting for connection
+    # on port N..."; "Listening at" is the st-util wording. Any of them means GDB can connect.
+    "stlink": re.compile(r"Waiting for (?:debugger )?connection|Listening at", re.IGNORECASE),
     "openocd": re.compile(r"Listening on port \d+ for gdb connections", re.IGNORECASE),
 }
 
@@ -531,9 +533,17 @@ class DebugProbeServer:
                     f"Cannot start {self._name}: TCP port {port} is already in use"
                 )
 
-        if cfg.kind in ("jlink", "stlink") and not _is_loopback(cfg.bind_address):
+        if cfg.kind == "jlink" and not _is_loopback(cfg.bind_address):
             logger.warning(
                 "%s cannot bind to a single address; listening on all interfaces", self._name
+            )
+        elif cfg.kind == "stlink":
+            logger.warning(
+                "%s has no bind option: --bind %s is not applied to GDB port %d, which may be "
+                "reachable from other machines; restrict it with a firewall if needed",
+                self._name,
+                cfg.bind_address,
+                cfg.resolved_gdb_port,
             )
 
         logger.info("Starting %s: %s", self._name, subprocess.list2cmdline(argv))

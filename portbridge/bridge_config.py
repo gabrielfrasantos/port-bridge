@@ -1,8 +1,9 @@
 """Bridge configuration shared by the CLI and the GUI: any number of serial, CAN and probe channels.
 
 ``parse_spec`` and the ``*_from_spec`` helpers turn the CLI's ``--add-serial``, ``--add-can`` and
-``--add-probe`` values (``key=value,key=value``) into configs; ``find_conflicts`` rejects
-configurations whose channels would fight over the same TCP port or device before anything starts.
+``--add-probe`` values (``key=value,key=value``) into configs; ``find_problems`` rejects
+out-of-range values and channels that would fight over the same TCP port or device before anything
+starts.
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ DEFAULT_CAN_TCP_PORT = 5001
 
 # Interfaces whose channel is a device index and may be omitted (defaults to the first device).
 CAN_INDEXED_INTERFACES = ("gs_usb", "candle")
+# Interfaces whose channel is a serial device that no serial bridge may open at the same time.
+CAN_SERIAL_INTERFACES = ("slcan",)
+
+MAX_TCP_PORT = 65535
 
 
 @dataclass
@@ -81,6 +86,8 @@ def find_conflicts(config: BridgeConfig) -> list[str]:
         owner = f"CAN {can.interface}:{can.channel}"
         claim(f"TCP port {can.tcp_port}", owner)
         claim(f"CAN channel {can.interface}:{can.channel}", owner)
+        if can.interface in CAN_SERIAL_INTERFACES:
+            claim(f"serial device {can.channel}", owner)
     for probe in config.probes:
         owner = f"{probe.kind} probe" + (f" {probe.serial_number}" if probe.serial_number else "")
         claim(f"TCP port {probe.resolved_gdb_port}", f"{owner} (GDB)")
@@ -93,6 +100,40 @@ def find_conflicts(config: BridgeConfig) -> list[str]:
         for resource, owners in claims.items()
         if len(owners) > 1
     ]
+
+
+def find_invalid_values(config: BridgeConfig) -> list[str]:
+    """Describe every TCP port outside 1-65535 and every non-positive rate or speed."""
+    problems: list[str] = []
+
+    def port(owner: str, value: int | None) -> None:
+        if value is not None and not 1 <= value <= MAX_TCP_PORT:
+            problems.append(f"{owner}: TCP port {value} is outside 1-{MAX_TCP_PORT}")
+
+    def positive(owner: str, what: str, value: int | None) -> None:
+        if value is not None and value <= 0:
+            problems.append(f"{owner}: {what} must be positive, got {value}")
+
+    for serial in config.serials:
+        owner = f"serial {serial.port}"
+        port(owner, serial.tcp_port)
+        positive(owner, "baud rate", serial.baudrate)
+    for can in config.cans:
+        owner = f"CAN {can.interface}:{can.channel}"
+        port(owner, can.tcp_port)
+        positive(owner, "bitrate", can.bitrate)
+        positive(owner, "TTY baud rate", can.tty_baudrate)
+    for probe in config.probes:
+        owner = f"{probe.kind} probe"
+        port(f"{owner} (GDB)", probe.resolved_gdb_port)
+        port(f"{owner} (telnet)", probe.resolved_telnet_port)
+        positive(owner, "speed", probe.speed_khz)
+    return problems
+
+
+def find_problems(config: BridgeConfig) -> list[str]:
+    """Everything that would make the bridge fail to start: bad values first, then conflicts."""
+    return find_invalid_values(config) + find_conflicts(config)
 
 
 # ----------------------------------------------------------------------

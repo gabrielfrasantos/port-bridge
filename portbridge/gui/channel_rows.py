@@ -94,6 +94,11 @@ def _optional_int_safe(edit: QLineEdit) -> int | None:
         return None
 
 
+def _is_selectable_serial(serial: str) -> bool:
+    # ST-LINK/V2 reports its USB serial as raw bytes; only pin rows to printable serials.
+    return bool(serial) and serial.isascii() and serial.isalnum()
+
+
 def _small_button(text: str, tooltip: str) -> QPushButton:
     button = QPushButton(text)
     button.setMaximumWidth(32)
@@ -570,7 +575,8 @@ class ProbeRow(ChannelRow):
         free = [
             p
             for p in probes
-            if p.get("serial") and f"probe:{p.get('probe')}:{p.get('serial')}" not in taken
+            if _is_selectable_serial(str(p.get("serial", "")))
+            and f"probe:{p.get('probe')}:{p.get('serial')}" not in taken
         ]
         if kind is None:
             first = free[0] if free else probes[0]
@@ -579,10 +585,9 @@ class ProbeRow(ChannelRow):
                 self.kind_combo.setCurrentIndex(idx)
             kind = self._kind()
 
-        # With several probes of this kind attached, pin this row to one no other row uses.
-        same_kind = [p for p in probes if p.get("probe") == kind and p.get("serial")]
+        # Pin this row to a probe no other row uses, so rows added later pick a different one.
         serial_edit = self._serial_edit()
-        if len(same_kind) > 1 and serial_edit is not None and not serial_edit.text().strip():
+        if serial_edit is not None and not serial_edit.text().strip():
             free_same = [p for p in free if p.get("probe") == kind]
             if free_same:
                 serial_edit.setText(str(free_same[0].get("serial", "")))

@@ -66,7 +66,7 @@ from .bridge_config import (
     SerialConfig,
     can_channel_or_default,
     can_from_spec,
-    find_conflicts,
+    find_problems,
     probe_from_spec,
     serial_from_spec,
 )
@@ -417,10 +417,10 @@ async def main() -> None:
         )
         sys.exit(1)
 
-    conflicts = find_conflicts(config)
-    if conflicts:
-        for conflict in conflicts:
-            logger.error("Configuration conflict: %s", conflict)
+    problems = find_problems(config)
+    if problems:
+        for problem in problems:
+            logger.error("Invalid configuration: %s", problem)
         sys.exit(1)
 
     servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer] = []

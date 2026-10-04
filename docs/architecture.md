@@ -64,16 +64,17 @@ DebugProbeServer.stop()
 
 The GDB server owns its sockets. The bridge passes `--bind` through: OpenOCD gets
 `bindto <addr>`, while J-Link only supports `-LocalhostOnly 1|0`, so any non-loopback bind
-means J-Link listens on all interfaces. ST-LINK_gdbserver has no bind option and listens on all
-interfaces.
+means J-Link listens on all interfaces. ST-LINK_gdbserver has no bind option, so `--bind` does
+not control its socket at all (port-bridge logs a warning instead); where it listens is up to the
+tool.
 
 ### Multiple channels
 
 `bridge_config.BridgeConfig` holds lists of `SerialConfig`, `CanConfig` and `ProbeConfig`.
 The CLI (`--add-serial` / `--add-can` / `--add-probe`) and the GUI ("+ Add" rows) both build
-one, reject it if `find_conflicts()` finds a TCP port, serial device or CAN channel claimed
-twice, then start one server per entry. A failed start stops the ones already running, in
-reverse order.
+one, reject it if `find_problems()` finds an out-of-range port or rate, or a TCP port, serial
+device or CAN channel claimed twice (an `slcan` channel also claims its serial device), then
+start one server per entry. A failed start stops the ones already running, in reverse order.
 
 ### Shutdown sequence
 
@@ -123,7 +124,7 @@ The format is byte-compatible with Linux `struct can_frame`. Clients on any OS d
 | Module | Responsibility |
 |--------|---------------|
 | `bridge_server.py` | CLI arg parsing; creates and starts servers; owns the stop event |
-| `bridge_config.py` | `BridgeConfig` (lists of serial / CAN / probe configs), `--add-*` spec parsing, `find_conflicts()` |
+| `bridge_config.py` | `BridgeConfig` (lists of serial / CAN / probe configs), `--add-*` spec parsing, `find_problems()` |
 | `serial_server.py` | `SerialOverTcpServer`: pyserial ↔ TCP byte passthrough |
 | `can_server.py` | `CanBusOverTcpServer`: python-can ↔ TCP 16-byte CAN frames |
 | `candle_bus.py` | `CandleBus`: thin wrapper around `candle_driver` (Windows Candle API) |

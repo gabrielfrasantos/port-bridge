@@ -7,6 +7,8 @@ from portbridge.bridge_config import (
     can_channel_or_default,
     can_from_spec,
     find_conflicts,
+    find_invalid_values,
+    find_problems,
     parse_spec,
     probe_from_spec,
     serial_from_spec,
@@ -158,9 +160,59 @@ class TestFindConflicts(unittest.TestCase):
             ],
         )
 
+    def test_slcan_channel_claims_its_serial_device(self):
+        cfg = BridgeConfig(
+            serials=[SerialConfig("COM3", tcp_port=5000)],
+            cans=[CanConfig("slcan", "COM3", tcp_port=5001, tty_baudrate=115200)],
+        )
+
+        self.assertEqual(
+            find_conflicts(cfg), ["serial device COM3 is used by serial COM3 and CAN slcan:COM3"]
+        )
+
     def test_is_empty(self):
         self.assertTrue(BridgeConfig().is_empty)
         self.assertFalse(BridgeConfig(serials=[SerialConfig("COM3")]).is_empty)
+
+
+class TestFindInvalidValues(unittest.TestCase):
+    def test_valid_config_has_no_problems(self):
+        cfg = BridgeConfig(
+            serials=[SerialConfig("COM3")],
+            cans=[CanConfig("slcan", "COM4", tty_baudrate=115200)],
+            probes=[ProbeConfig(kind="stlink", speed_khz=1800)],
+        )
+
+        self.assertEqual(find_problems(cfg), [])
+
+    def test_reports_out_of_range_ports_and_non_positive_rates(self):
+        cfg = BridgeConfig(
+            serials=[SerialConfig("COM3", baudrate=0, tcp_port=70000)],
+            cans=[CanConfig("pcan", "A", bitrate=-1, tcp_port=0)],
+            probes=[ProbeConfig(kind="jlink", gdb_port=65536, speed_khz=0)],
+        )
+
+        self.assertEqual(
+            find_invalid_values(cfg),
+            [
+                "serial COM3: TCP port 70000 is outside 1-65535",
+                "serial COM3: baud rate must be positive, got 0",
+                "CAN pcan:A: TCP port 0 is outside 1-65535",
+                "CAN pcan:A: bitrate must be positive, got -1",
+                "jlink probe (GDB): TCP port 65536 is outside 1-65535",
+                "jlink probe: speed must be positive, got 0",
+            ],
+        )
+
+    def test_find_problems_lists_values_before_conflicts(self):
+        cfg = BridgeConfig(
+            serials=[SerialConfig("COM3", tcp_port=0), SerialConfig("COM3", tcp_port=0)]
+        )
+
+        problems = find_problems(cfg)
+
+        self.assertIn("outside", problems[0])
+        self.assertIn("is used by", problems[-1])
 
 
 if __name__ == "__main__":

@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from portbridge.bridge_config import BridgeConfig, find_conflicts
+from portbridge.bridge_config import BridgeConfig, find_problems
 from portbridge.gui.bridge_controller import BridgeController
 from portbridge.gui.channel_rows import CanRow, ChannelRow, ChannelSection, ProbeRow, SerialRow
 
@@ -255,12 +255,13 @@ class MainWindow(QMainWindow):
                 "Select a serial port, a CAN interface or a debug probe first.",
             )
             return
-        conflicts = find_conflicts(config)
-        if conflicts:
+        problems = find_problems(config)
+        if problems:
             QMessageBox.warning(
                 self,
-                "Conflicting settings",
-                "Each channel needs its own TCP port and device:\n\n" + "\n".join(conflicts),
+                "Invalid settings",
+                "Fix these before starting; each channel needs its own TCP port and device:\n\n"
+                + "\n".join(problems),
             )
             return
 
