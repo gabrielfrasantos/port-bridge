@@ -91,6 +91,11 @@ class TestSpecConverters(unittest.TestCase):
         self.assertEqual(cfg.programmer_path, "/cp")
         self.assertEqual(cfg.bind_address, "0.0.0.0")
 
+    def test_probe_spec_stlink_device_is_normalized(self):
+        cfg = probe_from_spec("kind=stlink,device=stm32f446re", "127.0.0.1")
+
+        self.assertEqual(cfg.device, "STM32F446RE")
+
     def test_probe_spec_openocd_board_and_configs(self):
         cfg = probe_from_spec("kind=openocd,board=ek-tm4c123gxl,config=extra.cfg", "127.0.0.1")
 
@@ -104,6 +109,8 @@ class TestSpecConverters(unittest.TestCase):
             "kind=openocd": "requires 'board=' or 'config='",
             "kind=openocd,board=nope": "unknown OpenOCD board",
             "kind=stlink,interface=SPI": "interface must be one of",
+            "kind=stlink,device=TM4C123GH6PM": "STM32 devices only",
+            "kind=stlink,device=LPC1768": "STM32 devices only",
         }
         for spec, message in cases.items():
             with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, message):
@@ -184,6 +191,20 @@ class TestFindInvalidValues(unittest.TestCase):
         )
 
         self.assertEqual(find_problems(cfg), [])
+
+    def test_reports_non_st_stlink_device(self):
+        cfg = BridgeConfig(
+            probes=[
+                ProbeConfig(kind="stlink", device="STM32F446RE"),
+                ProbeConfig(kind="stlink", device="MK64FN1M0VLL12", gdb_port=61244),
+            ]
+        )
+
+        problems = find_invalid_values(cfg)
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("stlink probe: ST-LINK supports STMicroelectronics STM32", problems[0])
+        self.assertIn("'MK64FN1M0VLL12'", problems[0])
 
     def test_reports_out_of_range_ports_and_non_positive_rates(self):
         cfg = BridgeConfig(

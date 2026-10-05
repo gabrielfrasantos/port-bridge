@@ -13,7 +13,8 @@ exist on the host::
 
 Supported probes:
     - SEGGER J-Link (J-Link Software Pack must be installed): kind=jlink
-    - ST-LINK (ST-LINK_gdbserver from STM32CubeCLT or STM32CubeIDE): kind=stlink
+    - ST-LINK (ST-LINK_gdbserver from STM32CubeCLT or STM32CubeIDE): kind=stlink; STM32 targets
+      only, optionally checked against an expected device (e.g. STM32F446RE) before starting
     - OpenOCD (any adapter it supports, e.g. TI ICDI on Tiva LaunchPads): kind=openocd
 """
 
@@ -51,6 +52,36 @@ DEFAULT_PORTS: dict[str, tuple[int, int | None]] = {
 DEFAULT_JLINK_SPEED_KHZ = 4000
 JLINK_INTERFACES = ("SWD", "JTAG")
 STLINK_INTERFACES = ("SWD", "JTAG")
+
+# ST-LINK_gdbserver only debugs STMicroelectronics STM32 parts. These are suggestions (common
+# Nucleo / Discovery targets); any name of the form STM32<family><line>... is accepted.
+STLINK_DEVICES: tuple[str, ...] = (
+    "STM32C031C6",
+    "STM32F030R8",
+    "STM32F072RB",
+    "STM32F103RB",
+    "STM32F303RE",
+    "STM32F401RE",
+    "STM32F411RE",
+    "STM32F429ZI",
+    "STM32F446RE",
+    "STM32F746ZG",
+    "STM32F767ZI",
+    "STM32G071RB",
+    "STM32G431RB",
+    "STM32G474RE",
+    "STM32H563ZI",
+    "STM32H723ZG",
+    "STM32H743ZI",
+    "STM32L053R8",
+    "STM32L152RE",
+    "STM32L432KC",
+    "STM32L476RG",
+    "STM32L4R5ZI",
+    "STM32U575ZI",
+    "STM32WB55RG",
+    "STM32WL55JC",
+)
 
 OPENOCD_PRESETS: dict[str, str] = {
     "ek-tm4c123gxl": "board/ek-tm4c123gxl.cfg",
@@ -94,7 +125,7 @@ class ProbeConfig:
     gdb_port: int | None = None
     telnet_port: int | None = None
     speed_khz: int | None = None
-    # J-Link / ST-LINK
+    # J-Link (required) / ST-LINK (optional STM32 name, verified against the attached target)
     device: str | None = None
     interface: str = "SWD"
     serial_number: str | None = None
@@ -117,6 +148,71 @@ class ProbeConfig:
 def resolve_openocd_config(name: str) -> str:
     """Map a preset name (e.g. ``ek-tm4c123gxl``) to its config script; pass others through."""
     return OPENOCD_PRESETS.get(name, name)
+
+
+# ----------------------------------------------------------------------
+# ST-LINK target devices
+# ----------------------------------------------------------------------
+
+_ST_DEVICE = re.compile(r"STM32[A-Z]{1,2}[0-9][0-9A-Z]*")
+
+
+def normalize_st_device(name: str) -> str:
+    """Return ``name`` upper-cased if it is an STM32 part (e.g. ``STM32F446RE``); else raise.
+
+    ST-LINK_gdbserver cannot debug other vendors' parts (TI, NXP, ...), so anything that is
+    not an STM32 name is rejected with ``ValueError``.
+    """
+    device = name.strip().upper()
+    if not _ST_DEVICE.fullmatch(device):
+        raise ValueError(
+            f"ST-LINK supports STMicroelectronics STM32 devices only; '{name.strip()}' is not "
+            "an STM32 part name (e.g. STM32F446RE, STM32G431RB)"
+        )
+    return device
+
+
+def _st_name_patterns(reported: str) -> list[str]:
+    """Expand a CubeProgrammer device name such as ``STM32F446xC/E`` or ``STM32F76x/F77x``."""
+    patterns: list[str] = []
+    for token in reported.strip().upper().split("/"):
+        token = token.strip()
+        if not token:
+            continue
+        if token.startswith("STM32"):
+            patterns.append(token)
+        elif re.match(r"[A-Z]{1,2}[0-9]", token):
+            patterns.append("STM32" + token)
+        elif token[0].isdigit() and patterns:
+            # Same family: "STM32WB5x/35xx" also means "STM32WB35xx".
+            family = re.match(r"STM32[A-Z]{1,2}", patterns[-1])
+            if family:
+                patterns.append(family.group(0) + token)
+        elif patterns:
+            # A suffix alternative: "STM32F446xC/E" also means "STM32F446xE".
+            patterns.append(patterns[-1][: -len(token)] + token)
+    return patterns
+
+
+def st_device_matches(device: str, reported: str) -> bool:
+    """Whether ``device`` fits the device name STM32CubeProgrammer reports for the target.
+
+    ``x`` in either name is a wildcard and the shorter name is compared as a prefix, so
+    ``STM32F446RE`` and ``STM32F4`` both match ``STM32F446xC/E``.
+    """
+    wanted = device.strip().upper()
+    for pattern in _st_name_patterns(reported):
+        if all(a == b or "X" in (a, b) for a, b in zip(wanted, pattern, strict=False)):
+            return True
+    return False
+
+
+_CUBEPROGRAMMER_FIELD = re.compile(r"^\s*(Device name|Device ID)\s*:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def parse_cubeprogrammer_target(output: str) -> dict[str, str]:
+    """Pull ``Device name`` and ``Device ID`` out of STM32_Programmer_CLI connect output."""
+    return {m.group(1): m.group(2) for m in _CUBEPROGRAMMER_FIELD.finditer(output)}
 
 
 # ----------------------------------------------------------------------
@@ -393,6 +489,9 @@ def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str)
     if interface not in STLINK_INTERFACES:
         raise ValueError(f"ST-LINK interface must be SWD or JTAG, got '{cfg.interface}'")
 
+    if cfg.device:
+        normalize_st_device(cfg.device)
+
     # -e keeps the server alive across GDB sessions, matching J-Link and OpenOCD behaviour.
     cmd = [executable, "-p", str(cfg.resolved_gdb_port), "-cp", programmer_dir, "-e"]
     if interface == "SWD":
@@ -440,6 +539,58 @@ def build_probe_command(cfg: ProbeConfig, executable: str) -> list[str]:
         programmer_dir = find_stm32cubeprogrammer(cfg.programmer_path, executable)
         return build_stlink_command(cfg, executable, programmer_dir)
     return build_openocd_command(cfg, executable)
+
+
+def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
+    """Check that the ST-LINK is attached to ``cfg.device``; return the reported device name.
+
+    Connects once with STM32_Programmer_CLI in hot-plug mode (no reset, no halt) and compares
+    its "Device name" with ``cfg.device``. Raises ``HardwareUnavailableError`` when the target
+    cannot be read or is a different part, so the GDB server is never started for it.
+    """
+    if not cfg.device:
+        raise ValueError("no ST-LINK target device to verify")
+    device = normalize_st_device(cfg.device)
+    programmer_dir = find_stm32cubeprogrammer(cfg.programmer_path, gdbserver)
+    cli = str(Path(programmer_dir) / _cubeprogrammer_exe_name())
+
+    connect = ["-c", f"port={cfg.interface.upper()}", "mode=HOTPLUG"]
+    if cfg.serial_number:
+        connect.append(f"sn={cfg.serial_number}")
+    if cfg.speed_khz:
+        connect.append(f"freq={cfg.speed_khz}")
+    try:
+        completed = subprocess.run(
+            [cli, *connect],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=30,
+            check=False,
+            **_no_window_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HardwareUnavailableError(
+            f"Cannot check the ST-LINK target with STM32CubeProgrammer: {exc}"
+        ) from exc
+
+    output = completed.stdout + completed.stderr
+    fields = parse_cubeprogrammer_target(output)
+    reported = fields.get("Device name")
+    if reported is None:
+        tail = " | ".join(line.strip() for line in output.splitlines()[-5:] if line.strip())
+        raise HardwareUnavailableError(
+            f"Cannot read the ST-LINK target to confirm it is {device}: {tail or '(no output)'}"
+        )
+    device_id = fields.get("Device ID")
+    found = f"{reported} (ID {device_id})" if device_id else reported
+    if not st_device_matches(device, reported):
+        raise HardwareUnavailableError(
+            f"ST-LINK target is {found}, not the configured {device}; "
+            "fix the device setting or connect the right board"
+        )
+    return found
 
 
 def _no_window_kwargs() -> dict[str, Any]:
@@ -490,6 +641,7 @@ class DebugProbeServer:
         process_factory: Callable[..., Awaitable[Any]] = asyncio.create_subprocess_exec,
         port_probe: Callable[[str, int], Awaitable[bool]] = tcp_port_open,
         tool_finder: Callable[[ProbeConfig], str] = find_probe_tool,
+        target_verifier: Callable[[ProbeConfig, str], str] = verify_stlink_target,
         startup_timeout: float = 15.0,
         stop_timeout: float = 5.0,
         poll_interval: float = 0.25,
@@ -498,6 +650,7 @@ class DebugProbeServer:
         self._process_factory = process_factory
         self._port_probe = port_probe
         self._tool_finder = tool_finder
+        self._target_verifier = target_verifier
         self._startup_timeout = startup_timeout
         self._stop_timeout = stop_timeout
         self._poll_interval = poll_interval
@@ -545,6 +698,11 @@ class DebugProbeServer:
                 cfg.bind_address,
                 cfg.resolved_gdb_port,
             )
+
+        if cfg.kind == "stlink" and cfg.device:
+            loop = asyncio.get_running_loop()
+            found = await loop.run_in_executor(None, self._target_verifier, cfg, executable)
+            logger.info("ST-LINK target %s matches the configured %s", found, cfg.device.upper())
 
         logger.info("Starting %s: %s", self._name, subprocess.list2cmdline(argv))
         try:

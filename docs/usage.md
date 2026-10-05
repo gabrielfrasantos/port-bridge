@@ -92,6 +92,8 @@ port-bridge --probe jlink --jlink-device TM4C1294NCPDT \
 
 # ST-LINK (Nucleo / Discovery on-board or standalone) — GDB on :61234
 port-bridge --probe stlink
+# Refuse to start unless the board on the ST-LINK is an STM32F446RE
+port-bridge --probe stlink --stlink-device STM32F446RE
 port-bridge --probe stlink --stlink-serial 066DFF485550755187121723 \
     --stlink-interface JTAG --probe-speed 1800 \
     --stlink-programmer "C:\ST\STM32CubeCLT_1.16.0\STM32CubeProgrammer\bin"
@@ -136,6 +138,13 @@ ST-LINK_gdbserver needs the STM32CubeProgrammer `bin` folder. port-bridge finds 
 ST-LINK_gdbserver (STM32CubeCLT and STM32CubeIDE ship both) or in the standard
 STM32CubeProgrammer install folder; pass `--stlink-programmer` to override.
 
+ST-LINK debugs STMicroelectronics STM32 parts only, so `--stlink-device` (and `device=` in
+`--add-probe kind=stlink,...`) accepts STM32 names only (`STM32F446RE`, `STM32G431RB`, or a
+family prefix such as `STM32F4`); TI, NXP and other vendors' parts are rejected. It is optional.
+When set, port-bridge reads the attached chip once with `STM32_Programmer_CLI` in hot-plug mode
+(no reset, no halt) before starting ST-LINK_gdbserver, and refuses to start if the chip is a
+different part.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--probe` | — | `jlink`, `stlink` or `openocd`. Omit to disable. |
@@ -146,6 +155,7 @@ STM32CubeProgrammer install folder; pass `--stlink-programmer` to override.
 | `--jlink-device` | — | Target device, e.g. `TM4C123GH6PM` (required for jlink) |
 | `--jlink-interface` | SWD | `SWD` or `JTAG` |
 | `--jlink-serial` | — | Select a J-Link by USB serial number |
+| `--stlink-device` | — | Expected STM32 target, e.g. `STM32F446RE` (optional, STM32 only; checked before start) |
 | `--stlink-interface` | SWD | `SWD` or `JTAG` |
 | `--stlink-serial` | — | Select an ST-LINK by serial number |
 | `--stlink-programmer` | auto | STM32CubeProgrammer `bin` folder |
@@ -200,7 +210,7 @@ python -m portbridge.gui
 The GUI window shows:
 
 - **Serial and CAN sections** — one row per serial port or CAN bus (port, baudrate, CAN interface/channel/bitrate, TCP port); **+ Add serial port** / **+ Add CAN bus** add more, **−** removes one
-- **Debug probes section** — one row per probe: J-Link, ST-LINK or OpenOCD, J-Link device/interface/serial, ST-LINK interface/serial/STM32CubeProgrammer folder, OpenOCD config (TM4C LaunchPad presets), speed, GDB/telnet ports, tool path, **Detect probes**; **+ Add debug probe** adds more
+- **Debug probes section** — one row per probe: J-Link, ST-LINK or OpenOCD, J-Link device/interface/serial, ST-LINK device (editable STM32-only list)/interface/serial/STM32CubeProgrammer folder, OpenOCD config (TM4C LaunchPad presets), speed, GDB/telnet ports, tool path, **Detect probes**; **+ Add debug probe** adds more
 - **General** — bind address and log level
 - **Status row** — green/red indicators for serial bridge, CAN bridge and debug probe
 - **Start / Stop** button
