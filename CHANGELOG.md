@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.6...v0.1.7) (2026-10-05)
+
+
+### Features
+
+* STM32-only target device for ST-LINK probes ([#33](https://github.com/gabrielfrasantos/port-bridge/issues/33)) ([b78fdb7](https://github.com/gabrielfrasantos/port-bridge/commit/b78fdb77b8c20d53fe9a051f50273c5c9b1db5ca))
+
 ## [0.1.6](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.5...v0.1.6) (2026-10-04)
 
 
