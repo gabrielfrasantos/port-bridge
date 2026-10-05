@@ -17,6 +17,7 @@ from .probe_server import (
     PROBE_KINDS,
     STLINK_INTERFACES,
     ProbeConfig,
+    normalize_st_device,
 )
 
 DEFAULT_SERIAL_BAUDRATE = 921600
@@ -103,7 +104,8 @@ def find_conflicts(config: BridgeConfig) -> list[str]:
 
 
 def find_invalid_values(config: BridgeConfig) -> list[str]:
-    """Describe every TCP port outside 1-65535 and every non-positive rate or speed."""
+    """Describe every TCP port outside 1-65535, non-positive rate or speed and non-ST ST-LINK
+    device."""
     problems: list[str] = []
 
     def port(owner: str, value: int | None) -> None:
@@ -128,6 +130,11 @@ def find_invalid_values(config: BridgeConfig) -> list[str]:
         port(f"{owner} (GDB)", probe.resolved_gdb_port)
         port(f"{owner} (telnet)", probe.resolved_telnet_port)
         positive(owner, "speed", probe.speed_khz)
+        if probe.kind == "stlink" and probe.device:
+            try:
+                normalize_st_device(probe.device)
+            except ValueError as exc:
+                problems.append(f"{owner}: {exc}")
     return problems
 
 
@@ -246,6 +253,8 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
     device = _one(spec, "device")
     if kind == "jlink" and not device:
         raise ValueError("a jlink probe requires 'device=' (e.g. TM4C123GH6PM)")
+    if kind == "stlink" and device:
+        device = normalize_st_device(device)
     if kind == "openocd" and not configs:
         raise ValueError("an openocd probe requires 'board=' or 'config='")
 

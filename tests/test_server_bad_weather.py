@@ -700,6 +700,7 @@ def probe_args(**overrides):
         "jlink_device": None,
         "jlink_interface": "SWD",
         "jlink_serial": None,
+        "stlink_device": None,
         "stlink_interface": "SWD",
         "stlink_serial": None,
         "stlink_programmer": None,
@@ -828,6 +829,23 @@ class TestBridgeServerProbe(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cfg.programmer_path, "/cp/bin")
         self.assertEqual(cfg.resolved_gdb_port, 61234)
         self.assertIsNone(cfg.resolved_telnet_port)
+        self.assertIsNone(cfg.device)
+
+    def test_build_probe_config_stlink_device(self):
+        args = probe_args(probe="stlink", stlink_device="stm32f446re", jlink_device="TM4C")
+
+        cfg = bridge_server._build_probe_config(args)
+
+        assert cfg is not None
+        self.assertEqual(cfg.device, "STM32F446RE")
+
+    def test_build_probe_config_stlink_rejects_non_st_device(self):
+        args = probe_args(probe="stlink", stlink_device="TM4C123GH6PM")
+
+        with self.assertRaises(SystemExit) as ctx:
+            bridge_server._build_probe_config(args)
+
+        self.assertEqual(ctx.exception.code, 1)
 
 
 class TestBridgeServerMultipleChannels(unittest.IsolatedAsyncioTestCase):

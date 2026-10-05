@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import QRegularExpression, Signal, Slot
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -44,6 +45,7 @@ from portbridge.probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
+    STLINK_DEVICES,
     STLINK_INTERFACES,
     ProbeConfig,
     list_probes,
@@ -364,6 +366,31 @@ class ProbeRow(ChannelRow):
         jlink_row.addWidget(QLabel("Serial"))
         jlink_row.addWidget(self.jlink_serial_edit)
 
+        # Editable list of STM32 parts; the validator keeps out non-ST names (TI, NXP, ...).
+        self.stlink_device_combo = QComboBox()
+        self.stlink_device_combo.setEditable(True)
+        self.stlink_device_combo.addItems(list(STLINK_DEVICES))
+        self.stlink_device_combo.setCurrentIndex(-1)
+        self.stlink_device_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.stlink_device_combo.setValidator(
+            QRegularExpressionValidator(
+                QRegularExpression(
+                    "STM32[A-Z0-9]*", QRegularExpression.PatternOption.CaseInsensitiveOption
+                ),
+                self.stlink_device_combo,
+            )
+        )
+        stlink_device_line = self.stlink_device_combo.lineEdit()
+        if stlink_device_line is not None:
+            stlink_device_line.setPlaceholderText("any STM32")
+        self.stlink_device_combo.setToolTip(
+            "Expected STM32 target (STMicroelectronics parts only). Optional; when set, the "
+            "attached chip is read with STM32CubeProgrammer and the GDB server is not started "
+            "if it differs. Pick one or type any STM32 part name."
+        )
+        self.stlink_device_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.stlink_if_combo = QComboBox()
         self.stlink_if_combo.addItems(list(STLINK_INTERFACES))
         self.stlink_serial_edit = QLineEdit()
@@ -379,6 +406,8 @@ class ProbeRow(ChannelRow):
         programmer_btn.clicked.connect(self._browse_programmer)
 
         stlink_row = QHBoxLayout()
+        stlink_row.addWidget(QLabel("Device"))
+        stlink_row.addWidget(self.stlink_device_combo, stretch=1)
         stlink_row.addWidget(QLabel("Interface"))
         stlink_row.addWidget(self.stlink_if_combo)
         stlink_row.addWidget(QLabel("Serial"))
@@ -429,6 +458,7 @@ class ProbeRow(ChannelRow):
         self._kind_widgets: dict[str, list[QWidget]] = {
             "jlink": [self.jlink_device_edit, self.jlink_if_combo, self.jlink_serial_edit],
             "stlink": [
+                self.stlink_device_combo,
                 self.stlink_if_combo,
                 self.stlink_serial_edit,
                 self.stlink_programmer_edit,
@@ -480,7 +510,12 @@ class ProbeRow(ChannelRow):
         ]
         search_dir = self.openocd_search_edit.text().strip()
         serial_edit = self._serial_edit()
-        interface_combo = self.stlink_if_combo if kind == "stlink" else self.jlink_if_combo
+        if kind == "stlink":
+            interface_combo = self.stlink_if_combo
+            device = self.stlink_device_combo.currentText().strip().upper()
+        else:
+            interface_combo = self.jlink_if_combo
+            device = self.jlink_device_edit.text().strip()
         return ProbeConfig(
             kind=kind,  # type: ignore[arg-type]
             executable=self.path_edit.text().strip() or None,
@@ -488,7 +523,7 @@ class ProbeRow(ChannelRow):
             gdb_port=_optional_int(self.gdb_edit),
             telnet_port=_optional_int(self.telnet_edit) if kind != "stlink" else None,
             speed_khz=_optional_int(self.speed_edit),
-            device=self.jlink_device_edit.text().strip() or None,
+            device=device or None,
             interface=interface_combo.currentText(),
             serial_number=(serial_edit.text().strip() or None) if serial_edit else None,
             programmer_path=self.stlink_programmer_edit.text().strip() or None,

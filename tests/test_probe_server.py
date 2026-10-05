@@ -233,6 +233,134 @@ class TestCommandBuilders(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-cp") + 1], "/cp/bin")
 
 
+CUBEPROGRAMMER_F446 = """
+      -------------------------------------------------------------------
+                        STM32CubeProgrammer v2.17.0
+      -------------------------------------------------------------------
+
+ST-LINK SN  : 066DFF485550755187121723
+ST-LINK FW  : V2J43M28
+Board       : NUCLEO-F446RE
+Voltage     : 3.25V
+SWD freq    : 4000 KHz
+Connect mode: Hot Plug
+Reset mode  : Software reset
+Device ID   : 0x421
+Revision ID : Rev A
+Device name : STM32F446xC/E
+Flash size  : 512 KBytes
+Device type : MCU
+Device CPU  : Cortex-M4
+"""
+
+
+class TestStDevices(unittest.TestCase):
+    def test_normalize_accepts_stm32_names(self):
+        for name, expected in (
+            ("STM32F446RE", "STM32F446RE"),
+            (" stm32g431rb ", "STM32G431RB"),
+            ("STM32WB55RG", "STM32WB55RG"),
+            ("STM32MP157C", "STM32MP157C"),
+            ("STM32F4", "STM32F4"),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(probe_server.normalize_st_device(name), expected)
+
+    def test_normalize_rejects_other_vendors(self):
+        for name in (
+            "TM4C123GH6PM",
+            "LPC1768",
+            "MK64FN1M0VLL12",
+            "NRF52840",
+            "ATSAMD21G18A",
+            "GD32F303CC",
+            "STM8S105",
+            "STM32",
+            "",
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "STM32 devices only"):
+                probe_server.normalize_st_device(name)
+
+    def test_suggested_devices_are_all_valid(self):
+        for name in probe_server.STLINK_DEVICES:
+            self.assertEqual(probe_server.normalize_st_device(name), name)
+
+    def test_device_matches_reported_name(self):
+        cases = {
+            ("STM32F446RE", "STM32F446xC/E"): True,
+            ("STM32F446RC", "STM32F446xC/E"): True,
+            ("STM32F4", "STM32F446xC/E"): True,
+            ("STM32F407VG", "STM32F405xx/F407xx/F415xx/F417xx"): True,
+            ("STM32F417IG", "STM32F405xx/F407xx/F415xx/F417xx"): True,
+            ("STM32F767ZI", "STM32F76x/F77x"): True,
+            ("STM32G431RB", "STM32G43x/G44x"): True,
+            ("STM32WB35CE", "STM32WB5x/35xx"): True,
+            ("STM32WB55RG", "STM32WB5x/35xx"): True,
+            ("STM32WB15CC", "STM32WB5x/35xx"): False,
+            ("STM32F446RE", "STM32F401xD/E"): False,
+            ("STM32F446RE", "STM32G43x/G44x"): False,
+            ("STM32F446RA", "STM32F446xC/E"): False,
+            ("STM32L476RG", "STM32F405xx/F407xx/F415xx/F417xx"): False,
+        }
+        for (device, reported), expected in cases.items():
+            with self.subTest(device=device, reported=reported):
+                self.assertIs(probe_server.st_device_matches(device, reported), expected)
+
+    def test_parse_cubeprogrammer_target(self):
+        self.assertEqual(
+            probe_server.parse_cubeprogrammer_target(CUBEPROGRAMMER_F446),
+            {"Device ID": "0x421", "Device name": "STM32F446xC/E"},
+        )
+
+    def test_build_stlink_command_rejects_non_st_device(self):
+        with self.assertRaisesRegex(ValueError, "STM32 devices only"):
+            build_stlink_command(stlink_config(device="TM4C123GH6PM"), "st", "/cp")
+
+    def test_build_stlink_command_has_no_device_argument(self):
+        cmd = build_stlink_command(stlink_config(device="STM32F446RE"), "st", "/cp")
+        self.assertNotIn("STM32F446RE", cmd)
+
+
+class TestVerifyStlinkTarget(unittest.TestCase):
+    def _verify(self, output, returncode=0, **overrides):
+        values = {"device": "STM32F446RE"}
+        values.update(overrides)
+        completed = subprocess.CompletedProcess([], returncode, stdout=output, stderr="")
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            mock.patch.object(probe_server.subprocess, "run", return_value=completed) as run,
+        ):
+            found = probe_server.verify_stlink_target(stlink_config(**values), "/st/gdb")
+        return found, run.call_args.args[0]
+
+    def test_matching_target_connects_hot_plug(self):
+        found, argv = self._verify(
+            CUBEPROGRAMMER_F446, serial_number="066DFF48", interface="jtag", speed_khz=1800
+        )
+
+        self.assertEqual(found, "STM32F446xC/E (ID 0x421)")
+        self.assertTrue(argv[0].startswith(str(Path("/cp") / "STM32_Programmer_CLI")))
+        self.assertEqual(argv[1:], ["-c", "port=JTAG", "mode=HOTPLUG", "sn=066DFF48", "freq=1800"])
+
+    def test_mismatching_target_raises(self):
+        with self.assertRaisesRegex(
+            HardwareUnavailableError, r"STM32F446xC/E \(ID 0x421\), not the configured STM32L476RG"
+        ):
+            self._verify(CUBEPROGRAMMER_F446, device="stm32l476rg")
+
+    def test_unreadable_target_raises_with_output(self):
+        with self.assertRaisesRegex(HardwareUnavailableError, "No STM32 target found"):
+            self._verify("Error: No STM32 target found!", returncode=1)
+
+    def test_launch_failure_raises(self):
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            mock.patch.object(probe_server.subprocess, "run", side_effect=OSError("denied")),
+            self.assertRaisesRegex(HardwareUnavailableError, "denied"),
+        ):
+            probe_server.verify_stlink_target(stlink_config(device="STM32F446RE"), "/st/gdb")
+
+
 class TestToolDiscovery(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -400,6 +528,72 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(server.is_running)
         self.assertEqual(probed, [61234])
         await server.stop()
+
+    async def test_stlink_device_is_verified_before_launch(self):
+        calls = []
+        verified = []
+
+        def verifier(cfg, executable):
+            verified.append((cfg.device, executable))
+            return "STM32F446xC/E (ID 0x421)"
+
+        server = make_server(
+            stlink_config(device="STM32F446RE"),
+            FakeProcess(["Waiting for debugger connection..."]),
+            calls,
+            target_verifier=verifier,
+        )
+
+        with mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"):
+            await server.start()
+
+        self.assertEqual(verified, [("STM32F446RE", "/usr/bin/tool")])
+        self.assertEqual(len(calls), 1)
+        await server.stop()
+
+    async def test_stlink_wrong_target_never_starts_gdb_server(self):
+        calls = []
+
+        def verifier(cfg, executable):
+            raise HardwareUnavailableError("ST-LINK target is STM32L476xx, not STM32F446RE")
+
+        server = make_server(
+            stlink_config(device="STM32F446RE"), FakeProcess(), calls, target_verifier=verifier
+        )
+
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            self.assertRaisesRegex(HardwareUnavailableError, "STM32L476xx"),
+        ):
+            await server.start()
+
+        self.assertEqual(calls, [])
+        self.assertFalse(server.is_running)
+
+    async def test_stlink_without_device_skips_verification(self):
+        def verifier(cfg, executable):
+            raise AssertionError("must not verify")
+
+        server = make_server(
+            stlink_config(),
+            FakeProcess(["Waiting for debugger connection..."]),
+            target_verifier=verifier,
+        )
+
+        with mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"):
+            await server.start()
+
+        self.assertTrue(server.is_running)
+        await server.stop()
+
+    async def test_stlink_non_st_device_is_rejected_at_start(self):
+        server = make_server(stlink_config(device="LPC1768"), FakeProcess())
+
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            self.assertRaisesRegex(HardwareUnavailableError, "STM32 devices only"),
+        ):
+            await server.start()
 
     async def test_stlink_accepts_alternative_ready_lines(self):
         for line in ("Waiting for connection on port 61234...", "Listening at *:61234..."):

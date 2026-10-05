@@ -13,7 +13,7 @@ Layout (the three channel sections scroll; "+ Add" appends a row, "−" removes 
 │  Debug probes ────────────────────────────────────────  │
 │  Type [______▼]  Speed [____]  GDB [____]  Telnet [_][−]│
 │  J-Link   Device [_________]  Interface [SWD▼] Serial [] │
-│  ST-Link  Interface [SWD▼] Serial [___] CubeProgrammer[] │
+│  ST-Link  Device [STM32…▼] Interface [SWD▼] Serial []  … │
 │  OpenOCD  Config [_______________▼]  Search dir [_____]  │
 │  Executable [________________] [...] [Detect probes]    │
 │  [+ Add debug probe]                                    │

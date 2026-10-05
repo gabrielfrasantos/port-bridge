@@ -42,6 +42,9 @@ Usage examples:
     # ST-LINK GDB server (STM32CubeCLT or STM32CubeIDE installed), GDB on :61234
     python -m portbridge --probe stlink
 
+    # Same, but refuse to start unless the attached target is an STM32F446RE
+    python -m portbridge --probe stlink --stlink-device STM32F446RE
+
     # Several channels of each kind: the plain flags define the first one, --add-* the rest
     python -m portbridge --serial-port COM3 \
         --add-serial port=COM4,baud=115200,tcp=5002 \
@@ -78,6 +81,7 @@ from .probe_server import (
     STLINK_INTERFACES,
     DebugProbeServer,
     ProbeConfig,
+    normalize_st_device,
 )
 from .serial_server import SerialOverTcpServer
 from .server_errors import BridgeServerError
@@ -207,6 +211,13 @@ def parse_args() -> argparse.Namespace:
         help="ST-LINK target interface (default: SWD)",
     )
     probe_group.add_argument(
+        "--stlink-device",
+        metavar="STM32",
+        help="Expected STM32 target (e.g. STM32F446RE). Optional; when set, port-bridge reads the "
+        "attached chip with STM32CubeProgrammer and refuses to start if it differs. "
+        "Only STM32 names are accepted.",
+    )
+    probe_group.add_argument(
         "--stlink-serial",
         help="Select a specific ST-LINK by serial number.",
     )
@@ -294,9 +305,17 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
     if probe == "stlink":
         interface = getattr(args, "stlink_interface", "SWD")
         serial_number = getattr(args, "stlink_serial", None)
+        device = getattr(args, "stlink_device", None)
+        if device:
+            try:
+                device = normalize_st_device(device)
+            except ValueError as exc:
+                logger.error("--stlink-device: %s", exc)
+                sys.exit(1)
     else:
         interface = args.jlink_interface
         serial_number = args.jlink_serial
+        device = args.jlink_device
 
     return ProbeConfig(
         kind=probe,
@@ -305,7 +324,7 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
         gdb_port=args.probe_gdb_port,
         telnet_port=args.probe_telnet_port,
         speed_khz=args.probe_speed,
-        device=args.jlink_device,
+        device=device,
         interface=interface,
         serial_number=serial_number,
         programmer_path=getattr(args, "stlink_programmer", None),
