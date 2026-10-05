@@ -154,7 +154,8 @@ def resolve_openocd_config(name: str) -> str:
 # ST-LINK target devices
 # ----------------------------------------------------------------------
 
-_ST_DEVICE = re.compile(r"STM32[A-Z]{1,2}[0-9][0-9A-Z]*")
+# STM32 + family letters (F, WB, WBA, WLE, MP, ...) + line digit(s) + optional suffix.
+_ST_DEVICE = re.compile(r"STM32[A-Z]{1,3}[0-9][0-9A-Z]*")
 
 
 def normalize_st_device(name: str) -> str:
@@ -173,24 +174,35 @@ def normalize_st_device(name: str) -> str:
 
 
 def _st_name_patterns(reported: str) -> list[str]:
-    """Expand a CubeProgrammer device name such as ``STM32F446xC/E`` or ``STM32F76x/F77x``."""
+    """Expand a CubeProgrammer device name into the part patterns it covers.
+
+    Alternatives after the first ``/`` are abbreviated relative to the last full name:
+
+    - same family letters + line (``STM32F405xx/F407xx``, ``STM32WBA52xx/WBA54xx``): a new
+      series, ``STM32F407xx``;
+    - digits (``STM32WB5x/35xx``): a new line in the same family, ``STM32WB35xx``;
+    - anything else (``STM32F446xC/E``, ``STM32G0B0xx/B1xx/C1xx``): a replacement for the
+      tail, ``STM32F446xE``, ``STM32G0B1xx``.
+    """
     patterns: list[str] = []
+    base: str | None = None
     for token in reported.strip().upper().split("/"):
         token = token.strip()
         if not token:
             continue
         if token.startswith("STM32"):
+            base = token
             patterns.append(token)
-        elif re.match(r"[A-Z]{1,2}[0-9]", token):
+            continue
+        family = re.match(r"STM32([A-Z]{1,3})", base) if base else None
+        if base is None or family is None:
+            continue
+        if re.match(rf"{family.group(1)}[0-9]", token):
             patterns.append("STM32" + token)
-        elif token[0].isdigit() and patterns:
-            # Same family: "STM32WB5x/35xx" also means "STM32WB35xx".
-            family = re.match(r"STM32[A-Z]{1,2}", patterns[-1])
-            if family:
-                patterns.append(family.group(0) + token)
-        elif patterns:
-            # A suffix alternative: "STM32F446xC/E" also means "STM32F446xE".
-            patterns.append(patterns[-1][: -len(token)] + token)
+        elif token[0].isdigit():
+            patterns.append(family.group(0) + token)
+        elif len(token) < len(base) - len(family.group(0)):
+            patterns.append(base[: -len(token)] + token)
     return patterns
 
 
@@ -576,10 +588,16 @@ def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
         ) from exc
 
     output = completed.stdout + completed.stderr
+    tail = " | ".join(line.strip() for line in output.splitlines()[-5:] if line.strip())
+    if completed.returncode != 0:
+        # Fields printed before a failed connect cannot be trusted.
+        raise HardwareUnavailableError(
+            f"Cannot read the ST-LINK target to confirm it is {device}: STM32CubeProgrammer "
+            f"exited with code {completed.returncode}: {tail or '(no output)'}"
+        )
     fields = parse_cubeprogrammer_target(output)
     reported = fields.get("Device name")
     if reported is None:
-        tail = " | ".join(line.strip() for line in output.splitlines()[-5:] if line.strip())
         raise HardwareUnavailableError(
             f"Cannot read the ST-LINK target to confirm it is {device}: {tail or '(no output)'}"
         )

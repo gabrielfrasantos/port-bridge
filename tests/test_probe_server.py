@@ -261,6 +261,8 @@ class TestStDevices(unittest.TestCase):
             (" stm32g431rb ", "STM32G431RB"),
             ("STM32WB55RG", "STM32WB55RG"),
             ("STM32MP157C", "STM32MP157C"),
+            ("STM32WBA52CG", "STM32WBA52CG"),
+            ("STM32WLE5J8", "STM32WLE5J8"),
             ("STM32F4", "STM32F4"),
         ):
             with self.subTest(name=name):
@@ -297,6 +299,18 @@ class TestStDevices(unittest.TestCase):
             ("STM32WB35CE", "STM32WB5x/35xx"): True,
             ("STM32WB55RG", "STM32WB5x/35xx"): True,
             ("STM32WB15CC", "STM32WB5x/35xx"): False,
+            ("STM32G0B1RE", "STM32G0B0xx/B1xx/C1xx"): True,
+            ("STM32G0C1VE", "STM32G0B0xx/B1xx/C1xx"): True,
+            ("STM32G0B0RE", "STM32G0B0xx/B1xx/C1xx"): True,
+            ("STM32G071RB", "STM32G0B0xx/B1xx/C1xx"): False,
+            ("STM32B1", "STM32G0B0xx/B1xx/C1xx"): False,
+            ("STM32F030R8", "STM32F05x/F030x8"): True,
+            ("STM32F051R8", "STM32F05x/F030x8"): True,
+            ("STM32F070RB", "STM32F05x/F030x8"): False,
+            ("STM32WBA52CG", "STM32WBA52xx/WBA54xx/WBA55xx"): True,
+            ("STM32WBA55CG", "STM32WBA52xx/WBA54xx/WBA55xx"): True,
+            ("STM32WLE5J8", "STM32WLE5xx/WLE4xx"): True,
+            ("STM32WL55JC", "STM32WLE5xx/WLE4xx"): False,
             ("STM32F446RE", "STM32F401xD/E"): False,
             ("STM32F446RE", "STM32G43x/G44x"): False,
             ("STM32F446RA", "STM32F446xC/E"): False,
@@ -351,6 +365,13 @@ class TestVerifyStlinkTarget(unittest.TestCase):
     def test_unreadable_target_raises_with_output(self):
         with self.assertRaisesRegex(HardwareUnavailableError, "No STM32 target found"):
             self._verify("Error: No STM32 target found!", returncode=1)
+
+    def test_nonzero_exit_is_rejected_even_with_device_fields(self):
+        output = CUBEPROGRAMMER_F446 + "Error: failed to connect to the target"
+        with self.assertRaisesRegex(
+            HardwareUnavailableError, "exited with code 1: .*failed to connect to the target"
+        ):
+            self._verify(output, returncode=1)
 
     def test_launch_failure_raises(self):
         with (
