@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.7...v0.1.8) (2026-10-05)
+
+
+### Bug Fixes
+
+* accept all STM32 families and harden ST-LINK target check ([#35](https://github.com/gabrielfrasantos/port-bridge/issues/35)) ([c45ca20](https://github.com/gabrielfrasantos/port-bridge/commit/c45ca20264308b586eb2f583250df7a7dcfbe1d5))
+
 ## [0.1.7](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.6...v0.1.7) (2026-10-05)
 
 
