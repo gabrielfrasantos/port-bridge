@@ -574,9 +574,11 @@ def build_probe_command(cfg: ProbeConfig, executable: str) -> list[str]:
 def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
     """Check that the ST-LINK is attached to ``cfg.device``; return the reported device name.
 
-    Connects once with STM32_Programmer_CLI in hot-plug mode (no reset, no halt) and compares
-    its "Device name" with ``cfg.device``. Raises ``HardwareUnavailableError`` when the target
-    cannot be read or is a different part, so the GDB server is never started for it.
+    Connects once with STM32_Programmer_CLI in hot-plug mode (no reset, no halt), or under a
+    hardware reset when ``cfg.connect_mode`` is ``under-reset`` (a sleeping target may not answer
+    otherwise), and compares its "Device name" with ``cfg.device``. Raises
+    ``HardwareUnavailableError`` when the target cannot be read or is a different part, so the
+    GDB server is never started for it.
     """
     if not cfg.device:
         raise ValueError("no ST-LINK target device to verify")
@@ -584,7 +586,11 @@ def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
     programmer_dir = find_stm32cubeprogrammer(cfg.programmer_path, gdbserver)
     cli = str(Path(programmer_dir) / _cubeprogrammer_exe_name())
 
-    connect = ["-c", f"port={cfg.interface.upper()}", "mode=HOTPLUG"]
+    if cfg.connect_mode.lower() == "under-reset":
+        mode = ["mode=UR", "reset=HWrst"]
+    else:
+        mode = ["mode=HOTPLUG"]
+    connect = ["-c", f"port={cfg.interface.upper()}", *mode]
     if cfg.serial_number:
         connect.append(f"sn={cfg.serial_number}")
     if cfg.speed_khz:

@@ -367,6 +367,17 @@ class TestVerifyStlinkTarget(unittest.TestCase):
         self.assertTrue(argv[0].startswith(str(Path("/cp") / "STM32_Programmer_CLI")))
         self.assertEqual(argv[1:], ["-c", "port=JTAG", "mode=HOTPLUG", "sn=066DFF48", "freq=1800"])
 
+    def test_under_reset_verifies_under_hardware_reset(self):
+        for mode, expected in (
+            ("under-reset", ["mode=UR", "reset=HWrst"]),
+            ("hotplug", ["mode=HOTPLUG"]),
+            ("normal", ["mode=HOTPLUG"]),
+        ):
+            with self.subTest(mode=mode):
+                _, argv = self._verify(CUBEPROGRAMMER_F446, connect_mode=mode)
+
+                self.assertEqual(argv[1:], ["-c", "port=SWD", *expected])
+
     def test_mismatching_target_raises(self):
         with self.assertRaisesRegex(
             HardwareUnavailableError, r"STM32F446xC/E \(ID 0x421\), not the configured STM32L476RG"
@@ -581,6 +592,28 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(verified, [("STM32F446RE", "/usr/bin/tool")])
         self.assertEqual(len(calls), 1)
+        await server.stop()
+
+    async def test_stlink_device_and_under_reset_verifies_then_launches_with_k(self):
+        calls = []
+        modes = []
+
+        def verifier(cfg, executable):
+            modes.append(cfg.connect_mode)
+            return "STM32WBA52/54/55 (ID 0x492)"
+
+        server = make_server(
+            stlink_config(device="STM32WBA55CG", connect_mode="under-reset"),
+            FakeProcess(["Waiting for debugger connection..."]),
+            calls,
+            target_verifier=verifier,
+        )
+
+        with mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"):
+            await server.start()
+
+        self.assertEqual(modes, ["under-reset"])
+        self.assertIn("-k", calls[0][0])
         await server.stop()
 
     async def test_stlink_wrong_target_never_starts_gdb_server(self):
