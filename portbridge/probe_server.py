@@ -61,6 +61,11 @@ _STLINK_CONNECT_FLAGS: dict[str, list[str]] = {
     "under-reset": ["-k"],
     "hotplug": ["-g"],
 }
+# ST-LINK_gdbserver debugs access port 0 unless told otherwise (-m), but on these single-core
+# families the Cortex-M core sits on AP 1 (AP 0 only reaches debug components); the GDB server
+# then cannot halt the core. Same mapping as ST's OpenOCD target configs.
+_STLINK_AP1_FAMILIES = ("STM32C5", "STM32H5", "STM32H7R", "STM32H7S", "STM32V8", "STM32WBA")
+STLINK_MAX_ACCESS_PORT = 255
 
 # ST-LINK_gdbserver only debugs STMicroelectronics STM32 parts. These are suggestions (common
 # Nucleo / Discovery targets); any name of the form STM32<family><line>... is accepted.
@@ -143,6 +148,8 @@ class ProbeConfig:
     programmer_path: str | None = None
     # ST-LINK: one of STLINK_CONNECT_MODES
     connect_mode: str = "normal"
+    # ST-LINK: debug access port of the core (-m); None picks it from the device family
+    access_port: int | None = None
     # OpenOCD
     configs: list[str] = field(default_factory=list)
     search_dirs: list[str] = field(default_factory=list)
@@ -168,6 +175,15 @@ def resolve_openocd_config(name: str) -> str:
 
 # STM32 + family letters (F, WB, WBA, WLE, MP, ...) + line digit(s) + optional suffix.
 _ST_DEVICE = re.compile(r"STM32[A-Z]{1,3}[0-9][0-9A-Z]*")
+
+
+def stlink_access_port(cfg: ProbeConfig) -> int:
+    """Access port ST-LINK_gdbserver must debug: the configured one, else 1 for STM32 families
+    whose core is on AP 1 (e.g. STM32WBA, STM32H5), else 0."""
+    if cfg.access_port is not None:
+        return cfg.access_port
+    device = (cfg.device or "").strip().upper()
+    return 1 if device.startswith(_STLINK_AP1_FAMILIES) else 0
 
 
 def normalize_st_device(name: str) -> str:
@@ -521,6 +537,11 @@ def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str)
 
     if cfg.device:
         normalize_st_device(cfg.device)
+    access_port = stlink_access_port(cfg)
+    if not 0 <= access_port <= STLINK_MAX_ACCESS_PORT:
+        raise ValueError(
+            f"ST-LINK access port must be 0-{STLINK_MAX_ACCESS_PORT}, got {access_port}"
+        )
 
     # -e keeps the server alive across GDB sessions, matching J-Link and OpenOCD behaviour.
     cmd = [executable, "-p", str(cfg.resolved_gdb_port), "-cp", programmer_dir, "-e"]
@@ -530,6 +551,8 @@ def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str)
         cmd += ["-i", cfg.serial_number]
     if cfg.speed_khz:
         cmd += ["--frequency", str(cfg.speed_khz)]
+    if access_port:
+        cmd += ["-m", str(access_port)]
     return cmd + connect_flags
 
 
@@ -591,6 +614,8 @@ def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
     else:
         mode = ["mode=HOTPLUG"]
     connect = ["-c", f"port={cfg.interface.upper()}", *mode]
+    if cfg.access_port is not None:
+        connect.append(f"ap={cfg.access_port}")
     if cfg.serial_number:
         connect.append(f"sn={cfg.serial_number}")
     if cfg.speed_khz:
@@ -889,17 +914,20 @@ class DebugProbeServer:
 
     def _startup_hint(self) -> str:
         cfg = self.config
-        if (
-            cfg.kind == "stlink"
-            and cfg.connect_mode.lower() != "under-reset"
-            and any(_STLINK_NOT_HALTED.search(line) for line in self._tail)
-        ):
-            return (
-                ". The target could not be halted, typically because its firmware sleeps in a "
-                "low-power mode or reconfigures the debug pins; set the ST-LINK connect mode to "
-                "'under-reset' (NRST must be wired to the probe)"
+        if cfg.kind != "stlink" or not any(_STLINK_NOT_HALTED.search(ln) for ln in self._tail):
+            return ""
+        hints = []
+        if cfg.access_port is None and stlink_access_port(cfg) == 0:
+            hints.append(
+                "if the core is not on access port 0 (STM32WBA, H5, H7R/S, C5 and V8 use 1), "
+                "set the ST-LINK device or access port"
             )
-        return ""
+        if cfg.connect_mode.lower() != "under-reset":
+            hints.append(
+                "if the firmware sleeps in a low-power mode or reconfigures the debug pins, set "
+                "the ST-LINK connect mode to 'under-reset' (NRST must be wired to the probe)"
+            )
+        return (". The target could not be halted; " + "; ".join(hints)) if hints else ""
 
 
 # ----------------------------------------------------------------------

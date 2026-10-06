@@ -231,6 +231,13 @@ def parse_args() -> argparse.Namespace:
         "the running target without a reset.",
     )
     probe_group.add_argument(
+        "--stlink-ap",
+        type=int,
+        metavar="N",
+        help="Debug access port of the core (ST-LINK_gdbserver -m). Default: 1 for STM32WBA, H5, "
+        "H7R/S, C5 and V8 when --stlink-device names one, else 0.",
+    )
+    probe_group.add_argument(
         "--stlink-programmer",
         metavar="DIR",
         help="STM32CubeProgrammer bin folder required by ST-LINK_gdbserver "
@@ -269,8 +276,8 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="SPEC",
         help="Add another debug probe. Repeatable. SPEC is kind=jlink|stlink|openocd plus any of "
-        "path, gdb, telnet, speed, device, interface, serial, programmer, connect, board, config, "
-        "search; e.g. kind=stlink,serial=066DFF48,gdb=61244,connect=under-reset",
+        "path, gdb, telnet, speed, device, interface, serial, programmer, connect, ap, board, "
+        "config, search; e.g. kind=stlink,serial=066DFF48,gdb=61244,connect=under-reset",
     )
     probe_group.add_argument(
         "--list-probes",
@@ -338,6 +345,7 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
         serial_number=serial_number,
         programmer_path=getattr(args, "stlink_programmer", None),
         connect_mode=getattr(args, "stlink_connect", "normal") if probe == "stlink" else "normal",
+        access_port=getattr(args, "stlink_ap", None) if probe == "stlink" else None,
         configs=configs,
         search_dirs=list(args.openocd_search),
         commands=list(args.openocd_command),

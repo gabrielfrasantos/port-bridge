@@ -97,6 +97,12 @@ class TestSpecConverters(unittest.TestCase):
 
         self.assertEqual(cfg.connect_mode, "under-reset")
 
+    def test_probe_spec_stlink_access_port(self):
+        self.assertIsNone(probe_from_spec("kind=stlink", "127.0.0.1").access_port)
+        self.assertEqual(probe_from_spec("kind=stlink,ap=1", "127.0.0.1").access_port, 1)
+        with self.assertRaises(ValueError):
+            probe_from_spec("kind=openocd,board=ek-tm4c123gxl,ap=1", "127.0.0.1")
+
     def test_probe_spec_rejects_bad_connect_mode(self):
         with self.assertRaises(ValueError):
             probe_from_spec("kind=stlink,connect=powerdown", "127.0.0.1")
@@ -203,6 +209,14 @@ class TestFindInvalidValues(unittest.TestCase):
         )
 
         self.assertEqual(find_problems(cfg), [])
+
+    def test_reports_out_of_range_access_port(self):
+        cfg = BridgeConfig(probes=[ProbeConfig(kind="stlink", access_port=300)])
+
+        problems = find_invalid_values(cfg)
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("access port must be 0-255", problems[0])
 
     def test_reports_non_st_stlink_device(self):
         cfg = BridgeConfig(
