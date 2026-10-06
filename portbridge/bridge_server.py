@@ -78,6 +78,7 @@ from .probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
+    STLINK_CONNECT_MODES,
     STLINK_INTERFACES,
     DebugProbeServer,
     ProbeConfig,
@@ -222,6 +223,14 @@ def parse_args() -> argparse.Namespace:
         help="Select a specific ST-LINK by serial number.",
     )
     probe_group.add_argument(
+        "--stlink-connect",
+        choices=STLINK_CONNECT_MODES,
+        default="normal",
+        help="ST-LINK connect mode (default: normal). Use under-reset for firmware that sleeps in "
+        "a low-power mode or disables the debug pins ('Target not halted'); hotplug attaches to "
+        "the running target without a reset.",
+    )
+    probe_group.add_argument(
         "--stlink-programmer",
         metavar="DIR",
         help="STM32CubeProgrammer bin folder required by ST-LINK_gdbserver "
@@ -260,8 +269,8 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="SPEC",
         help="Add another debug probe. Repeatable. SPEC is kind=jlink|stlink|openocd plus any of "
-        "path, gdb, telnet, speed, device, interface, serial, programmer, board, config, search; "
-        "e.g. kind=stlink,serial=066DFF48,gdb=61244",
+        "path, gdb, telnet, speed, device, interface, serial, programmer, connect, board, config, "
+        "search; e.g. kind=stlink,serial=066DFF48,gdb=61244,connect=under-reset",
     )
     probe_group.add_argument(
         "--list-probes",
@@ -328,6 +337,7 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
         interface=interface,
         serial_number=serial_number,
         programmer_path=getattr(args, "stlink_programmer", None),
+        connect_mode=getattr(args, "stlink_connect", "normal") if probe == "stlink" else "normal",
         configs=configs,
         search_dirs=list(args.openocd_search),
         commands=list(args.openocd_command),

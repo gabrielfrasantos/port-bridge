@@ -220,6 +220,17 @@ class TestCommandBuilders(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_stlink_command(stlink_config(interface="SPI"), "st", "/cp")
 
+    def test_stlink_connect_modes(self):
+        for mode, flags in (("normal", []), ("under-reset", ["-k"]), ("HOTPLUG", ["-g"])):
+            with self.subTest(mode=mode):
+                cmd = build_stlink_command(stlink_config(connect_mode=mode), "st", "/cp")
+
+                self.assertEqual(cmd, ["st", "-p", "61234", "-cp", "/cp", "-e", "-d", *flags])
+
+    def test_stlink_rejects_unknown_connect_mode(self):
+        with self.assertRaises(ValueError):
+            build_stlink_command(stlink_config(connect_mode="powerdown"), "st", "/cp")
+
     def test_stlink_has_no_telnet_port(self):
         self.assertIsNone(stlink_config().resolved_telnet_port)
 
@@ -703,6 +714,25 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("code 1", str(ctx.exception))
         self.assertIn("unable to find ICDI", str(ctx.exception))
         self.assertFalse(server.is_running)
+
+    async def test_stlink_not_halted_suggests_connect_under_reset(self):
+        lines = ["Target not halted after reset. Force halt", "Failed to halt target"]
+
+        for mode, hinted in (("normal", True), ("hotplug", True), ("under-reset", False)):
+            with self.subTest(mode=mode):
+                server = make_server(
+                    stlink_config(connect_mode=mode), FakeProcess(lines, exit_code=9)
+                )
+
+                with (
+                    mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+                    self.assertLogs("portbridge.probe_server", level="WARNING"),
+                    self.assertRaises(HardwareUnavailableError) as ctx,
+                ):
+                    await server.start()
+
+                self.assertIn("Failed to halt target", str(ctx.exception))
+                self.assertEqual("'under-reset'" in str(ctx.exception), hinted)
 
     async def test_startup_timeout_terminates_process(self):
         proc = FakeProcess(["Connecting to target..."])
