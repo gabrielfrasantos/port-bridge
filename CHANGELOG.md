@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.8...v0.1.9) (2026-10-06)
+
+
+### Features
+
+* ST-LINK connect mode (normal, under-reset, hotplug) ([#37](https://github.com/gabrielfrasantos/port-bridge/issues/37)) ([56f873f](https://github.com/gabrielfrasantos/port-bridge/commit/56f873f32f13a62ac072d19e6fe35ef97ade3362))
+
 ## [0.1.8](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.7...v0.1.8) (2026-10-05)
 
 
