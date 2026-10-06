@@ -227,6 +227,35 @@ class TestCommandBuilders(unittest.TestCase):
 
                 self.assertEqual(cmd, ["st", "-p", "61234", "-cp", "/cp", "-e", "-d", *flags])
 
+    def test_stlink_access_port_defaults_from_device_family(self):
+        for device, flags in (
+            (None, []),
+            ("STM32F446RE", []),
+            ("STM32WBA55CG", ["-m", "1"]),
+            ("stm32h563zi", ["-m", "1"]),
+            ("STM32H7S3L8", ["-m", "1"]),
+            ("STM32H743ZI", []),
+        ):
+            with self.subTest(device=device):
+                cmd = build_stlink_command(stlink_config(device=device), "st", "/cp")
+
+                self.assertEqual(cmd, ["st", "-p", "61234", "-cp", "/cp", "-e", "-d", *flags])
+
+    def test_stlink_explicit_access_port_wins(self):
+        cmd = build_stlink_command(
+            stlink_config(device="STM32WBA55CG", access_port=0, connect_mode="under-reset"),
+            "st",
+            "/cp",
+        )
+        self.assertEqual(cmd, ["st", "-p", "61234", "-cp", "/cp", "-e", "-d", "-k"])
+
+        cmd = build_stlink_command(stlink_config(access_port=2), "st", "/cp")
+        self.assertEqual(cmd[-2:], ["-m", "2"])
+
+    def test_stlink_rejects_out_of_range_access_port(self):
+        with self.assertRaises(ValueError):
+            build_stlink_command(stlink_config(access_port=256), "st", "/cp")
+
     def test_stlink_rejects_unknown_connect_mode(self):
         with self.assertRaises(ValueError):
             build_stlink_command(stlink_config(connect_mode="powerdown"), "st", "/cp")
@@ -377,6 +406,11 @@ class TestVerifyStlinkTarget(unittest.TestCase):
                 _, argv = self._verify(CUBEPROGRAMMER_F446, connect_mode=mode)
 
                 self.assertEqual(argv[1:], ["-c", "port=SWD", *expected])
+
+    def test_explicit_access_port_is_passed_to_cubeprogrammer(self):
+        _, argv = self._verify(CUBEPROGRAMMER_F446, access_port=1)
+
+        self.assertEqual(argv[1:], ["-c", "port=SWD", "mode=HOTPLUG", "ap=1"])
 
     def test_mismatching_target_raises(self):
         with self.assertRaisesRegex(
@@ -766,6 +800,26 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
 
                 self.assertIn("Failed to halt target", str(ctx.exception))
                 self.assertEqual("'under-reset'" in str(ctx.exception), hinted)
+
+    async def test_stlink_not_halted_suggests_access_port_only_when_unset(self):
+        lines = ["Failed to halt target"]
+        cases = (
+            (stlink_config(connect_mode="under-reset"), True),
+            (stlink_config(connect_mode="under-reset", device="STM32WBA55CG"), False),
+            (stlink_config(connect_mode="under-reset", access_port=0), False),
+        )
+        for cfg, hinted in cases:
+            with self.subTest(device=cfg.device, access_port=cfg.access_port):
+                server = make_server(cfg, FakeProcess(lines, exit_code=9))
+
+                with (
+                    mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+                    self.assertLogs("portbridge.probe_server", level="WARNING"),
+                    self.assertRaises(HardwareUnavailableError) as ctx,
+                ):
+                    await server.start()
+
+                self.assertEqual("access port" in str(ctx.exception), hinted)
 
     async def test_startup_timeout_terminates_process(self):
         proc = FakeProcess(["Connecting to target..."])

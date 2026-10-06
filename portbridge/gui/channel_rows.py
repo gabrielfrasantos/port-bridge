@@ -401,6 +401,13 @@ class ProbeRow(ChannelRow):
             "firmware in a low-power mode or with the debug pins disabled ('Target not halted'). "
             "hotplug: attach to the running target without a reset."
         )
+        self.stlink_ap_edit = QLineEdit()
+        self.stlink_ap_edit.setPlaceholderText("auto")
+        self.stlink_ap_edit.setMaximumWidth(50)
+        self.stlink_ap_edit.setToolTip(
+            "Debug access port of the core (ST-LINK_gdbserver -m). auto: 1 for STM32WBA, H5, "
+            "H7R/S, C5 and V8 when the device is set, else 0"
+        )
         self.stlink_serial_edit = QLineEdit()
         self.stlink_serial_edit.setPlaceholderText("any")
         self.stlink_serial_edit.setMinimumWidth(120)
@@ -420,6 +427,8 @@ class ProbeRow(ChannelRow):
         stlink_row.addWidget(self.stlink_if_combo)
         stlink_row.addWidget(QLabel("Connect"))
         stlink_row.addWidget(self.stlink_connect_combo)
+        stlink_row.addWidget(QLabel("AP"))
+        stlink_row.addWidget(self.stlink_ap_edit)
         stlink_row.addWidget(QLabel("Serial"))
         stlink_row.addWidget(self.stlink_serial_edit, stretch=1)
         stlink_row.addWidget(QLabel("CubeProgrammer"))
@@ -471,6 +480,7 @@ class ProbeRow(ChannelRow):
                 self.stlink_device_combo,
                 self.stlink_if_combo,
                 self.stlink_connect_combo,
+                self.stlink_ap_edit,
                 self.stlink_serial_edit,
                 self.stlink_programmer_edit,
                 programmer_btn,
@@ -539,6 +549,7 @@ class ProbeRow(ChannelRow):
             serial_number=(serial_edit.text().strip() or None) if serial_edit else None,
             programmer_path=self.stlink_programmer_edit.text().strip() or None,
             connect_mode=self.stlink_connect_combo.currentText() if kind == "stlink" else "normal",
+            access_port=_optional_int(self.stlink_ap_edit) if kind == "stlink" else None,
             configs=configs,
             search_dirs=[search_dir] if search_dir else [],
         )

@@ -705,6 +705,7 @@ def probe_args(**overrides):
         "stlink_serial": None,
         "stlink_programmer": None,
         "stlink_connect": "normal",
+        "stlink_ap": None,
         "openocd_board": None,
         "openocd_config": [],
         "openocd_search": [],
@@ -839,6 +840,12 @@ class TestBridgeServerProbe(unittest.IsolatedAsyncioTestCase):
 
         assert cfg is not None
         self.assertEqual(cfg.connect_mode, "under-reset")
+
+    def test_build_probe_config_stlink_access_port(self):
+        cfg = bridge_server._build_probe_config(probe_args(probe="stlink", stlink_ap=1))
+
+        assert cfg is not None
+        self.assertEqual(cfg.access_port, 1)
 
     def test_build_probe_config_stlink_device(self):
         args = probe_args(probe="stlink", stlink_device="stm32f446re", jlink_device="TM4C")

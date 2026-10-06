@@ -17,6 +17,7 @@ from .probe_server import (
     PROBE_KINDS,
     STLINK_CONNECT_MODES,
     STLINK_INTERFACES,
+    STLINK_MAX_ACCESS_PORT,
     ProbeConfig,
     normalize_st_device,
 )
@@ -131,6 +132,10 @@ def find_invalid_values(config: BridgeConfig) -> list[str]:
         port(f"{owner} (GDB)", probe.resolved_gdb_port)
         port(f"{owner} (telnet)", probe.resolved_telnet_port)
         positive(owner, "speed", probe.speed_khz)
+        if probe.access_port is not None and not 0 <= probe.access_port <= STLINK_MAX_ACCESS_PORT:
+            problems.append(
+                f"{owner}: access port must be 0-{STLINK_MAX_ACCESS_PORT}, got {probe.access_port}"
+            )
         if probe.kind == "stlink" and probe.device:
             try:
                 normalize_st_device(probe.device)
@@ -161,6 +166,7 @@ PROBE_SPEC_KEYS = (
     "serial",
     "programmer",
     "connect",
+    "ap",
     "board",
     "config",
     "search",
@@ -265,6 +271,8 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
         raise ValueError(f"probe connect must be one of {', '.join(STLINK_CONNECT_MODES)}")
     if kind != "stlink" and _one(spec, "connect") is not None:
         raise ValueError("'connect=' applies to stlink probes only")
+    if kind != "stlink" and _one(spec, "ap") is not None:
+        raise ValueError("'ap=' applies to stlink probes only")
 
     return ProbeConfig(
         kind=kind,
@@ -278,6 +286,7 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
         serial_number=_one(spec, "serial"),
         programmer_path=_one(spec, "programmer"),
         connect_mode=connect_mode,
+        access_port=_int(spec, "ap"),
         configs=configs,
         search_dirs=list(spec.get("search", [])),
     )
