@@ -15,6 +15,7 @@ from .probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
+    STLINK_CONNECT_MODES,
     STLINK_INTERFACES,
     ProbeConfig,
     normalize_st_device,
@@ -159,6 +160,7 @@ PROBE_SPEC_KEYS = (
     "interface",
     "serial",
     "programmer",
+    "connect",
     "board",
     "config",
     "search",
@@ -258,6 +260,12 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
     if kind == "openocd" and not configs:
         raise ValueError("an openocd probe requires 'board=' or 'config='")
 
+    connect_mode = (_one(spec, "connect") or "normal").lower()
+    if kind == "stlink" and connect_mode not in STLINK_CONNECT_MODES:
+        raise ValueError(f"probe connect must be one of {', '.join(STLINK_CONNECT_MODES)}")
+    if kind != "stlink" and _one(spec, "connect") is not None:
+        raise ValueError("'connect=' applies to stlink probes only")
+
     return ProbeConfig(
         kind=kind,
         executable=_one(spec, "path"),
@@ -269,6 +277,7 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
         interface=interface,
         serial_number=_one(spec, "serial"),
         programmer_path=_one(spec, "programmer"),
+        connect_mode=connect_mode,
         configs=configs,
         search_dirs=list(spec.get("search", [])),
     )

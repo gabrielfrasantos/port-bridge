@@ -220,6 +220,17 @@ class TestCommandBuilders(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_stlink_command(stlink_config(interface="SPI"), "st", "/cp")
 
+    def test_stlink_connect_modes(self):
+        for mode, flags in (("normal", []), ("under-reset", ["-k"]), ("HOTPLUG", ["-g"])):
+            with self.subTest(mode=mode):
+                cmd = build_stlink_command(stlink_config(connect_mode=mode), "st", "/cp")
+
+                self.assertEqual(cmd, ["st", "-p", "61234", "-cp", "/cp", "-e", "-d", *flags])
+
+    def test_stlink_rejects_unknown_connect_mode(self):
+        with self.assertRaises(ValueError):
+            build_stlink_command(stlink_config(connect_mode="powerdown"), "st", "/cp")
+
     def test_stlink_has_no_telnet_port(self):
         self.assertIsNone(stlink_config().resolved_telnet_port)
 
@@ -355,6 +366,17 @@ class TestVerifyStlinkTarget(unittest.TestCase):
         self.assertEqual(found, "STM32F446xC/E (ID 0x421)")
         self.assertTrue(argv[0].startswith(str(Path("/cp") / "STM32_Programmer_CLI")))
         self.assertEqual(argv[1:], ["-c", "port=JTAG", "mode=HOTPLUG", "sn=066DFF48", "freq=1800"])
+
+    def test_under_reset_verifies_under_hardware_reset(self):
+        for mode, expected in (
+            ("under-reset", ["mode=UR", "reset=HWrst"]),
+            ("hotplug", ["mode=HOTPLUG"]),
+            ("normal", ["mode=HOTPLUG"]),
+        ):
+            with self.subTest(mode=mode):
+                _, argv = self._verify(CUBEPROGRAMMER_F446, connect_mode=mode)
+
+                self.assertEqual(argv[1:], ["-c", "port=SWD", *expected])
 
     def test_mismatching_target_raises(self):
         with self.assertRaisesRegex(
@@ -572,6 +594,28 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         await server.stop()
 
+    async def test_stlink_device_and_under_reset_verifies_then_launches_with_k(self):
+        calls = []
+        modes = []
+
+        def verifier(cfg, executable):
+            modes.append(cfg.connect_mode)
+            return "STM32WBA52/54/55 (ID 0x492)"
+
+        server = make_server(
+            stlink_config(device="STM32WBA55CG", connect_mode="under-reset"),
+            FakeProcess(["Waiting for debugger connection..."]),
+            calls,
+            target_verifier=verifier,
+        )
+
+        with mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"):
+            await server.start()
+
+        self.assertEqual(modes, ["under-reset"])
+        self.assertIn("-k", calls[0][0])
+        await server.stop()
+
     async def test_stlink_wrong_target_never_starts_gdb_server(self):
         calls = []
 
@@ -703,6 +747,25 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("code 1", str(ctx.exception))
         self.assertIn("unable to find ICDI", str(ctx.exception))
         self.assertFalse(server.is_running)
+
+    async def test_stlink_not_halted_suggests_connect_under_reset(self):
+        lines = ["Target not halted after reset. Force halt", "Failed to halt target"]
+
+        for mode, hinted in (("normal", True), ("hotplug", True), ("under-reset", False)):
+            with self.subTest(mode=mode):
+                server = make_server(
+                    stlink_config(connect_mode=mode), FakeProcess(lines, exit_code=9)
+                )
+
+                with (
+                    mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+                    self.assertLogs("portbridge.probe_server", level="WARNING"),
+                    self.assertRaises(HardwareUnavailableError) as ctx,
+                ):
+                    await server.start()
+
+                self.assertIn("Failed to halt target", str(ctx.exception))
+                self.assertEqual("'under-reset'" in str(ctx.exception), hinted)
 
     async def test_startup_timeout_terminates_process(self):
         proc = FakeProcess(["Connecting to target..."])

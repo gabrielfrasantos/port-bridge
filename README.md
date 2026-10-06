@@ -181,6 +181,7 @@ STM32CubeProgrammer install folder; pass `--stlink-programmer` to override.
 | `--jlink-serial` | — | Select a J-Link by USB serial number |
 | `--stlink-interface` | SWD | `SWD` or `JTAG` |
 | `--stlink-serial` | — | Select an ST-LINK by serial number |
+| `--stlink-connect` | normal | `normal`, `under-reset` (firmware in low-power mode / "Target not halted"; needs NRST wired) or `hotplug` (attach without reset) |
 | `--stlink-programmer` | auto | STM32CubeProgrammer `bin` folder |
 | `--openocd-board` | — | Preset: `ek-tm4c123gxl`, `ek-tm4c1294xl` |
 | `--openocd-config` | — | Config script (`-f`), repeatable |
@@ -209,7 +210,7 @@ port-bridge \
 |------|------|
 | `--add-serial` | `port` (required), `baud`, `tcp` |
 | `--add-can` | `interface` (required), `channel`, `bitrate`, `tcp`, `tty-baud` |
-| `--add-probe` | `kind` (required: `jlink`, `stlink`, `openocd`), `path`, `gdb`, `telnet`, `speed`, `device`, `interface`, `serial`, `programmer`, `board`, `config`, `search` (`config` and `search` repeat) |
+| `--add-probe` | `kind` (required: `jlink`, `stlink`, `openocd`), `path`, `gdb`, `telnet`, `speed`, `device`, `interface`, `serial`, `programmer`, `connect`, `board`, `config`, `search` (`config` and `search` repeat) |
 
 Every channel needs its own TCP port and device. port-bridge refuses to start when two
 channels share a TCP port, a serial device or a CAN channel (an `slcan` channel counts as its

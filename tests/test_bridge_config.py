@@ -91,6 +91,18 @@ class TestSpecConverters(unittest.TestCase):
         self.assertEqual(cfg.programmer_path, "/cp")
         self.assertEqual(cfg.bind_address, "0.0.0.0")
 
+    def test_probe_spec_stlink_connect_mode(self):
+        self.assertEqual(probe_from_spec("kind=stlink", "127.0.0.1").connect_mode, "normal")
+        cfg = probe_from_spec("kind=stlink,connect=Under-Reset", "127.0.0.1")
+
+        self.assertEqual(cfg.connect_mode, "under-reset")
+
+    def test_probe_spec_rejects_bad_connect_mode(self):
+        with self.assertRaises(ValueError):
+            probe_from_spec("kind=stlink,connect=powerdown", "127.0.0.1")
+        with self.assertRaises(ValueError):
+            probe_from_spec("kind=openocd,board=ek-tm4c123gxl,connect=hotplug", "127.0.0.1")
+
     def test_probe_spec_stlink_device_is_normalized(self):
         cfg = probe_from_spec("kind=stlink,device=stm32f446re", "127.0.0.1")
 

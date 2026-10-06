@@ -45,6 +45,7 @@ from portbridge.probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
+    STLINK_CONNECT_MODES,
     STLINK_DEVICES,
     STLINK_INTERFACES,
     ProbeConfig,
@@ -393,6 +394,13 @@ class ProbeRow(ChannelRow):
         )
         self.stlink_if_combo = QComboBox()
         self.stlink_if_combo.addItems(list(STLINK_INTERFACES))
+        self.stlink_connect_combo = QComboBox()
+        self.stlink_connect_combo.addItems(list(STLINK_CONNECT_MODES))
+        self.stlink_connect_combo.setToolTip(
+            "normal: software reset, then halt. under-reset: connect while NRST is held, for "
+            "firmware in a low-power mode or with the debug pins disabled ('Target not halted'). "
+            "hotplug: attach to the running target without a reset."
+        )
         self.stlink_serial_edit = QLineEdit()
         self.stlink_serial_edit.setPlaceholderText("any")
         self.stlink_serial_edit.setMinimumWidth(120)
@@ -410,6 +418,8 @@ class ProbeRow(ChannelRow):
         stlink_row.addWidget(self.stlink_device_combo, stretch=1)
         stlink_row.addWidget(QLabel("Interface"))
         stlink_row.addWidget(self.stlink_if_combo)
+        stlink_row.addWidget(QLabel("Connect"))
+        stlink_row.addWidget(self.stlink_connect_combo)
         stlink_row.addWidget(QLabel("Serial"))
         stlink_row.addWidget(self.stlink_serial_edit, stretch=1)
         stlink_row.addWidget(QLabel("CubeProgrammer"))
@@ -460,6 +470,7 @@ class ProbeRow(ChannelRow):
             "stlink": [
                 self.stlink_device_combo,
                 self.stlink_if_combo,
+                self.stlink_connect_combo,
                 self.stlink_serial_edit,
                 self.stlink_programmer_edit,
                 programmer_btn,
@@ -527,6 +538,7 @@ class ProbeRow(ChannelRow):
             interface=interface_combo.currentText(),
             serial_number=(serial_edit.text().strip() or None) if serial_edit else None,
             programmer_path=self.stlink_programmer_edit.text().strip() or None,
+            connect_mode=self.stlink_connect_combo.currentText() if kind == "stlink" else "normal",
             configs=configs,
             search_dirs=[search_dir] if search_dir else [],
         )

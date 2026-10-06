@@ -52,6 +52,15 @@ DEFAULT_PORTS: dict[str, tuple[int, int | None]] = {
 DEFAULT_JLINK_SPEED_KHZ = 4000
 JLINK_INTERFACES = ("SWD", "JTAG")
 STLINK_INTERFACES = ("SWD", "JTAG")
+# ST-LINK_gdbserver connect modes, named after STM32CubeProgrammer's "Mode" setting. Firmware that
+# sleeps in a low-power mode (Stop/Standby) cannot be halted after a software reset; connecting
+# under reset holds NRST so the core is halted before it runs.
+STLINK_CONNECT_MODES = ("normal", "under-reset", "hotplug")
+_STLINK_CONNECT_FLAGS: dict[str, list[str]] = {
+    "normal": [],
+    "under-reset": ["-k"],
+    "hotplug": ["-g"],
+}
 
 # ST-LINK_gdbserver only debugs STMicroelectronics STM32 parts. These are suggestions (common
 # Nucleo / Discovery targets); any name of the form STM32<family><line>... is accepted.
@@ -115,6 +124,7 @@ _USB_PROBES: dict[tuple[int, int | None], tuple[str, str]] = {
 }
 
 _TAIL_LINES = 10
+_STLINK_NOT_HALTED = re.compile(r"Target not halted|Failed to halt", re.IGNORECASE)
 
 
 @dataclass
@@ -131,6 +141,8 @@ class ProbeConfig:
     serial_number: str | None = None
     # ST-LINK: STM32CubeProgrammer "bin" folder (auto-detected when None)
     programmer_path: str | None = None
+    # ST-LINK: one of STLINK_CONNECT_MODES
+    connect_mode: str = "normal"
     # OpenOCD
     configs: list[str] = field(default_factory=list)
     search_dirs: list[str] = field(default_factory=list)
@@ -500,6 +512,12 @@ def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str)
     interface = cfg.interface.upper()
     if interface not in STLINK_INTERFACES:
         raise ValueError(f"ST-LINK interface must be SWD or JTAG, got '{cfg.interface}'")
+    connect_flags = _STLINK_CONNECT_FLAGS.get(cfg.connect_mode.lower())
+    if connect_flags is None:
+        raise ValueError(
+            f"ST-LINK connect mode must be one of {', '.join(STLINK_CONNECT_MODES)}, "
+            f"got '{cfg.connect_mode}'"
+        )
 
     if cfg.device:
         normalize_st_device(cfg.device)
@@ -512,7 +530,7 @@ def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str)
         cmd += ["-i", cfg.serial_number]
     if cfg.speed_khz:
         cmd += ["--frequency", str(cfg.speed_khz)]
-    return cmd
+    return cmd + connect_flags
 
 
 def build_openocd_command(cfg: ProbeConfig, executable: str) -> list[str]:
@@ -556,9 +574,11 @@ def build_probe_command(cfg: ProbeConfig, executable: str) -> list[str]:
 def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
     """Check that the ST-LINK is attached to ``cfg.device``; return the reported device name.
 
-    Connects once with STM32_Programmer_CLI in hot-plug mode (no reset, no halt) and compares
-    its "Device name" with ``cfg.device``. Raises ``HardwareUnavailableError`` when the target
-    cannot be read or is a different part, so the GDB server is never started for it.
+    Connects once with STM32_Programmer_CLI in hot-plug mode (no reset, no halt), or under a
+    hardware reset when ``cfg.connect_mode`` is ``under-reset`` (a sleeping target may not answer
+    otherwise), and compares its "Device name" with ``cfg.device``. Raises
+    ``HardwareUnavailableError`` when the target cannot be read or is a different part, so the
+    GDB server is never started for it.
     """
     if not cfg.device:
         raise ValueError("no ST-LINK target device to verify")
@@ -566,7 +586,11 @@ def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
     programmer_dir = find_stm32cubeprogrammer(cfg.programmer_path, gdbserver)
     cli = str(Path(programmer_dir) / _cubeprogrammer_exe_name())
 
-    connect = ["-c", f"port={cfg.interface.upper()}", "mode=HOTPLUG"]
+    if cfg.connect_mode.lower() == "under-reset":
+        mode = ["mode=UR", "reset=HWrst"]
+    else:
+        mode = ["mode=HOTPLUG"]
+    connect = ["-c", f"port={cfg.interface.upper()}", *mode]
     if cfg.serial_number:
         connect.append(f"sn={cfg.serial_number}")
     if cfg.speed_khz:
@@ -747,6 +771,7 @@ class DebugProbeServer:
             self._process = None
             raise HardwareUnavailableError(
                 f"{self._name} exited with code {code} during startup: {self._tail_text()}"
+                f"{self._startup_hint()}"
             )
 
         if not done:
@@ -861,6 +886,20 @@ class DebugProbeServer:
 
     def _tail_text(self) -> str:
         return " | ".join(self._tail) if self._tail else "(no output)"
+
+    def _startup_hint(self) -> str:
+        cfg = self.config
+        if (
+            cfg.kind == "stlink"
+            and cfg.connect_mode.lower() != "under-reset"
+            and any(_STLINK_NOT_HALTED.search(line) for line in self._tail)
+        ):
+            return (
+                ". The target could not be halted, typically because its firmware sleeps in a "
+                "low-power mode or reconfigures the debug pins; set the ST-LINK connect mode to "
+                "'under-reset' (NRST must be wired to the probe)"
+            )
+        return ""
 
 
 # ----------------------------------------------------------------------
