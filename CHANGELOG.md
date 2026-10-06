@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.9...v0.1.10) (2026-10-06)
+
+
+### Bug Fixes
+
+* debug the core's access port on STM32WBA, H5, H7R/S, C5 and V8 ([#39](https://github.com/gabrielfrasantos/port-bridge/issues/39)) ([833babc](https://github.com/gabrielfrasantos/port-bridge/commit/833babcbff177021c66fa4929a5e18ee6a5b44cb))
+
 ## [0.1.9](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.8...v0.1.9) (2026-10-06)
 
 
