@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.10...v0.1.11) (2026-10-08)
+
+
+### Features
+
+* forward SEGGER RTT from J-Link and OpenOCD probes ([#41](https://github.com/gabrielfrasantos/port-bridge/issues/41)) ([14e7117](https://github.com/gabrielfrasantos/port-bridge/commit/14e7117f8fadaa2e30f38e060f8bd5528fe68653))
+
 ## [0.1.10](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.9...v0.1.10) (2026-10-06)
 
 
