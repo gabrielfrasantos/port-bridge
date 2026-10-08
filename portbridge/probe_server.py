@@ -16,6 +16,10 @@ Supported probes:
     - ST-LINK (ST-LINK_gdbserver from STM32CubeCLT or STM32CubeIDE): kind=stlink; STM32 targets
       only, optionally checked against an expected device (e.g. STM32F446RE) before starting
     - OpenOCD (any adapter it supports, e.g. TI ICDI on Tiva LaunchPads): kind=openocd
+
+SEGGER RTT (channel 0) is opt-in via ``ProbeConfig.rtt_port`` and served by the tool itself:
+J-Link through ``-RTTTelnetPort``, OpenOCD through its ``rtt`` commands. ST-LINK_gdbserver has no
+RTT support; use an OpenOCD probe with ``interface/stlink.cfg`` instead.
 """
 
 from __future__ import annotations
@@ -50,6 +54,13 @@ DEFAULT_PORTS: dict[str, tuple[int, int | None]] = {
     "openocd": (3333, 4444),
 }
 DEFAULT_JLINK_SPEED_KHZ = 4000
+# OpenOCD searches this RAM range for the RTT control block; 0x20000000 is the start of SRAM on
+# STM32, TM4C and nRF parts.
+DEFAULT_RTT_ADDRESS = 0x2000_0000
+DEFAULT_RTT_SIZE = 0x10000
+RTT_STLINK_HINT = (
+    "ST-LINK_gdbserver has no RTT support; use an openocd probe with interface/stlink.cfg"
+)
 JLINK_INTERFACES = ("SWD", "JTAG")
 STLINK_INTERFACES = ("SWD", "JTAG")
 # ST-LINK_gdbserver connect modes, named after STM32CubeProgrammer's "Mode" setting. Firmware that
@@ -139,6 +150,11 @@ class ProbeConfig:
     bind_address: str = "127.0.0.1"
     gdb_port: int | None = None
     telnet_port: int | None = None
+    # SEGGER RTT channel 0 over TCP (J-Link and OpenOCD); None leaves RTT off
+    rtt_port: int | None = None
+    # OpenOCD: RAM range searched for the RTT control block (defaults: DEFAULT_RTT_*)
+    rtt_address: int | None = None
+    rtt_size: int | None = None
     speed_khz: int | None = None
     # J-Link (required) / ST-LINK (optional STM32 name, verified against the attached target)
     device: str | None = None
@@ -518,6 +534,8 @@ def build_jlink_command(cfg: ProbeConfig, executable: str) -> list[str]:
         "-telnetport",
         str(cfg.resolved_telnet_port),
     ]
+    if cfg.rtt_port is not None:
+        cmd += ["-RTTTelnetPort", str(cfg.rtt_port)]
     if cfg.serial_number:
         cmd += ["-select", f"USB={cfg.serial_number}"]
     cmd += ["-LocalhostOnly", "1" if _is_loopback(cfg.bind_address) else "0"]
@@ -525,6 +543,8 @@ def build_jlink_command(cfg: ProbeConfig, executable: str) -> list[str]:
 
 
 def build_stlink_command(cfg: ProbeConfig, executable: str, programmer_dir: str) -> list[str]:
+    if cfg.rtt_port is not None:
+        raise ValueError(RTT_STLINK_HINT)
     interface = cfg.interface.upper()
     if interface not in STLINK_INTERFACES:
         raise ValueError(f"ST-LINK interface must be SWD or JTAG, got '{cfg.interface}'")
@@ -582,6 +602,22 @@ def build_openocd_command(cfg: ProbeConfig, executable: str) -> list[str]:
         cmd += ["-c", f"adapter speed {cfg.speed_khz}"]
     for command in cfg.commands:
         cmd += ["-c", command]
+    if cfg.rtt_port is not None:
+        # Last, so user commands that must precede init (transport select, reset_config) still do.
+        # An explicit init is a no-op when OpenOCD would run it anyway; rtt start needs the
+        # targets examined. The server's bindto applies to the RTT port as well.
+        address = cfg.rtt_address if cfg.rtt_address is not None else DEFAULT_RTT_ADDRESS
+        size = cfg.rtt_size if cfg.rtt_size is not None else DEFAULT_RTT_SIZE
+        cmd += [
+            "-c",
+            "init",
+            "-c",
+            f'rtt setup {address:#x} {size:#x} "SEGGER RTT"',
+            "-c",
+            "rtt start",
+            "-c",
+            f"rtt server start {cfg.rtt_port} 0",
+        ]
     return cmd
 
 
@@ -747,7 +783,7 @@ class DebugProbeServer:
 
         host = _connect_host(cfg.bind_address)
         telnet_port = cfg.resolved_telnet_port
-        for port in (cfg.resolved_gdb_port, telnet_port):
+        for port in (cfg.resolved_gdb_port, telnet_port, cfg.rtt_port):
             if port is not None and await self._port_probe(host, port):
                 raise PortUnavailableError(
                     f"Cannot start {self._name}: TCP port {port} is already in use"
@@ -757,6 +793,13 @@ class DebugProbeServer:
             logger.warning(
                 "%s cannot bind to a single address; listening on all interfaces", self._name
             )
+            if cfg.rtt_port is not None:
+                logger.warning(
+                    "%s RTT port %d may stay on localhost on J-Link software older than V7.80c; "
+                    "update it if the container cannot connect",
+                    self._name,
+                    cfg.rtt_port,
+                )
         elif cfg.kind == "stlink":
             logger.warning(
                 "%s has no bind option: --bind %s is not applied to GDB port %d, which may be "
@@ -808,12 +851,14 @@ class DebugProbeServer:
 
         self._running = True
         telnet_text = f", telnet port {telnet_port}" if telnet_port is not None else ""
+        rtt_text = f", RTT port {cfg.rtt_port}" if cfg.rtt_port is not None else ""
         logger.info(
-            "%s listening on %s: GDB port %d%s",
+            "%s listening on %s: GDB port %d%s%s",
             self._name,
             cfg.bind_address,
             cfg.resolved_gdb_port,
             telnet_text,
+            rtt_text,
         )
 
     async def _wait_until_ready(self, host: str, port: int | None) -> bool:

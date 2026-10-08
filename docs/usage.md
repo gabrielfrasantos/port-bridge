@@ -145,12 +145,49 @@ When set, port-bridge reads the attached chip once with `STM32_Programmer_CLI` i
 (no reset, no halt) before starting ST-LINK_gdbserver, and refuses to start if the chip is a
 different part.
 
+### SEGGER RTT
+
+RTT (Real-Time Transfer) streams the firmware's log output from target RAM over the debug
+probe without halting the core. It is off by default; `--probe-rtt-port` serves **channel 0** on
+that TCP port (19021 is the SEGGER convention) next to the GDB port:
+
+```bash
+# J-Link: the GDB server's own RTT telnet port
+port-bridge --probe jlink --jlink-device NRF52840_XXAA --probe-rtt-port 19021 --bind 0.0.0.0
+
+# OpenOCD (>= 0.11), also with an ST-LINK adapter; the firmware's _SEGGER_RTT block must lie in
+# the searched RAM range (default 0x20000000, 0x10000 bytes)
+port-bridge --probe openocd \
+    --openocd-config interface/stlink.cfg --openocd-config target/stm32f4x.cfg \
+    --probe-rtt-port 19021 --openocd-rtt-address 0x20000000 --openocd-rtt-size 0x20000 \
+    --bind 0.0.0.0
+
+# From the container
+nc host.docker.internal 19021
+```
+
+- **J-Link** — supported through `-RTTTelnetPort`. The port only listens while the GDB server has
+  a session with the target, so attach with GDB (or the J-Link tools) first. J-Link V7.70 was
+  reported to keep this port on localhost even when "localhost only" was off; SEGGER planned a fix
+  for V7.80c. port-bridge logs a warning for a non-loopback `--bind`; update the J-Link Software
+  Pack if the container cannot connect.
+- **OpenOCD** — supported (`rtt setup`, `rtt start`, `rtt server start`; OpenOCD 0.11 or newer).
+  port-bridge appends these after your `--openocd-command`s, preceded by an explicit `init`, and
+  `--bind` applies to the RTT port. `--openocd-rtt-address` / `--openocd-rtt-size` set the RAM
+  range searched for the control block.
+- **ST-LINK** — not supported: `ST-LINK_gdbserver` has no RTT. port-bridge refuses to start with
+  `--probe-rtt-port`; use an `openocd` probe with `interface/stlink.cfg` instead.
+
+Only channel 0 is forwarded. The RTT port needs its own TCP port like every other channel, and
+port-bridge refuses to start if it clashes with another one.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--probe` | — | `jlink`, `stlink` or `openocd`. Omit to disable. |
 | `--probe-path` | auto | Tool executable or its folder |
 | `--probe-gdb-port` | 2331 / 61234 / 3333 | GDB server TCP port (jlink / stlink / openocd) |
 | `--probe-telnet-port` | 2333 / — / 4444 | Telnet TCP port (jlink / stlink has none / openocd) |
+| `--probe-rtt-port` | off | Serve SEGGER RTT channel 0 on this TCP port (jlink and openocd; not stlink) |
 | `--probe-speed` | 4000 / tool / cfg | Interface speed in kHz (jlink / ST-LINK default / openocd config default) |
 | `--jlink-device` | — | Target device, e.g. `TM4C123GH6PM` (required for jlink) |
 | `--jlink-interface` | SWD | `SWD` or `JTAG` |
@@ -165,6 +202,8 @@ different part.
 | `--openocd-config` | — | Config script (`-f`), repeatable |
 | `--openocd-search` | — | Script search directory (`-s`), repeatable |
 | `--openocd-command` | — | Extra command (`-c`) after the configs, repeatable |
+| `--openocd-rtt-address` | 0x20000000 | Start of the RAM range OpenOCD searches for the RTT control block (with `--probe-rtt-port`) |
+| `--openocd-rtt-size` | 0x10000 | Size of that range in bytes |
 | `--list-probes` | — | Print detected probes and tools and exit (`--json` supported) |
 
 ## Multiple serial ports, CAN buses and probes
@@ -188,13 +227,13 @@ port-bridge \
 |------|------|
 | `--add-serial` | `port` (required), `baud`, `tcp` |
 | `--add-can` | `interface` (required), `channel`, `bitrate`, `tcp`, `tty-baud` |
-| `--add-probe` | `kind` (required: `jlink`, `stlink`, `openocd`), `path`, `gdb`, `telnet`, `speed`, `device`, `interface`, `serial`, `programmer`, `connect`, `ap`, `board`, `config`, `search` (`config` and `search` repeat) |
+| `--add-probe` | `kind` (required: `jlink`, `stlink`, `openocd`), `path`, `gdb`, `telnet`, `rtt`, `rtt-address`, `rtt-size`, `speed`, `device`, `interface`, `serial`, `programmer`, `connect`, `ap`, `board`, `config`, `search` (`config` and `search` repeat; `rtt` is for `jlink` and `openocd`, `rtt-address` / `rtt-size` for `openocd`) |
 
 Every channel needs its own TCP port and device. port-bridge refuses to start when two
 channels share a TCP port, a serial device or a CAN channel (an `slcan` channel counts as its
 serial device), or when a TCP port is outside 1-65535 or a rate is not positive. Two probes of the same kind also
-need different `gdb` (and `telnet`) ports and should name a `serial` so each server picks its
-own probe.
+need different `gdb` (and `telnet`, and `rtt` when used) ports and should name a `serial` so each
+server picks its own probe.
 
 In the GUI, the **+ Add serial port**, **+ Add CAN bus** and **+ Add debug probe** buttons
 add a row to each section and **−** removes one. A new row starts on a free TCP port. A second
@@ -212,7 +251,7 @@ python -m portbridge.gui
 The GUI window shows:
 
 - **Serial and CAN sections** — one row per serial port or CAN bus (port, baudrate, CAN interface/channel/bitrate, TCP port); **+ Add serial port** / **+ Add CAN bus** add more, **−** removes one
-- **Debug probes section** — one row per probe: J-Link, ST-LINK or OpenOCD, J-Link device/interface/serial, ST-LINK device (editable STM32-only list)/interface/serial/STM32CubeProgrammer folder, OpenOCD config (TM4C LaunchPad presets), speed, GDB/telnet ports, tool path, **Detect probes**; **+ Add debug probe** adds more
+- **Debug probes section** — one row per probe: J-Link, ST-LINK or OpenOCD, J-Link device/interface/serial, ST-LINK device (editable STM32-only list)/interface/serial/STM32CubeProgrammer folder, OpenOCD config (TM4C LaunchPad presets) and RTT search range, speed, GDB/telnet/RTT ports (RTT is blank = off and disabled for ST-LINK), tool path, **Detect probes**; **+ Add debug probe** adds more
 - **General** — bind address and log level
 - **Status row** — green/red indicators for serial bridge, CAN bridge and debug probe
 - **Start / Stop** button
@@ -244,6 +283,7 @@ port-bridge --serial-port /dev/ttyACM0 --bind 0.0.0.0
 # Inside Docker — connect to host.docker.internal
 nc host.docker.internal 5000   # serial
 arm-none-eabi-gdb fw.elf -ex "target extended-remote host.docker.internal:3333"   # OpenOCD
+nc host.docker.internal 19021   # RTT channel 0 (needs --probe-rtt-port 19021)
 ```
 
 The C++ HIL test client in e-foc connects with `--bridge-host host.docker.internal --serial-port 5000 --can-port 5001`.

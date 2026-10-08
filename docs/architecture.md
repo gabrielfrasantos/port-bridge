@@ -52,7 +52,7 @@ asyncio.run(main())
 DebugProbeServer.start()
   ├── locate tool (--probe-path → PATH → SEGGER / STM32CubeCLT / STM32CubeIDE install folders)
   │     stlink also locates the STM32CubeProgrammer bin folder (-cp)
-  ├── refuse to start if the GDB/telnet port is already in use
+  ├── refuse to start if the GDB/telnet/RTT port is already in use
   ├── asyncio.create_subprocess_exec(JLinkGDBServerCL | ST-LINK_gdbserver | openocd, ...)
   ├── _pump_output() task: stdout/stderr lines → logging "portbridge.probe.<kind>.<gdb port>"
   └── ready when the "ready" line is seen OR the telnet port accepts a connection
@@ -67,6 +67,14 @@ The GDB server owns its sockets. The bridge passes `--bind` through: OpenOCD get
 means J-Link listens on all interfaces. ST-LINK_gdbserver has no bind option, so `--bind` does
 not control its socket at all (port-bridge logs a warning instead); where it listens is up to the
 tool.
+
+RTT (`ProbeConfig.rtt_port`, opt-in, channel 0 only) is served by the tool too, never relayed by
+port-bridge: J-Link gets `-RTTTelnetPort <port>`; OpenOCD gets `init`, `rtt setup <addr> <size>`,
+`rtt start` and `rtt server start <port> 0` appended after the user's `-c` commands, so its
+`bindto` covers the RTT port. ST-LINK_gdbserver has no RTT, so an RTT port on a `stlink` probe
+is rejected by `find_invalid_values()` before anything starts (`build_stlink_command` raises as a
+backstop). The RTT port is not used as a readiness signal: J-Link only opens it once a session
+with the target exists.
 
 ### Multiple channels
 

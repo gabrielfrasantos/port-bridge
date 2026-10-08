@@ -42,6 +42,8 @@ from portbridge.list_can_interfaces import gather_all
 from portbridge.probe_server import (
     DEFAULT_JLINK_SPEED_KHZ,
     DEFAULT_PORTS,
+    DEFAULT_RTT_ADDRESS,
+    DEFAULT_RTT_SIZE,
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
@@ -75,12 +77,12 @@ def next_free_port(start: int, used: set[int], step: int = 1) -> int:
     return port
 
 
-def _optional_int(edit: QLineEdit) -> int | None:
+def _optional_int(edit: QLineEdit, base: int = 10) -> int | None:
     text = edit.text().strip()
     if not text:
         return None
     try:
-        return int(text)
+        return int(text, base)
     except ValueError:
         raise ValueError(f"'{text}' is not a valid number") from None
 
@@ -340,6 +342,13 @@ class ProbeRow(ChannelRow):
         self.gdb_edit.setMaximumWidth(80)
         self.telnet_edit = QLineEdit()
         self.telnet_edit.setMaximumWidth(80)
+        self.rtt_edit = QLineEdit()
+        self.rtt_edit.setMaximumWidth(80)
+        self.rtt_edit.setPlaceholderText("off")
+        self.rtt_edit.setToolTip(
+            "Serve SEGGER RTT channel 0 on this TCP port (J-Link and OpenOCD; 19021 is the usual "
+            "choice). Blank = RTT off. With J-Link the port only listens during an active session."
+        )
 
         row1 = QHBoxLayout()
         row1.addWidget(self.kind_combo)
@@ -350,6 +359,8 @@ class ProbeRow(ChannelRow):
         row1.addWidget(self.gdb_edit)
         row1.addWidget(QLabel("Telnet port"))
         row1.addWidget(self.telnet_edit)
+        row1.addWidget(QLabel("RTT port"))
+        row1.addWidget(self.rtt_edit)
 
         self.jlink_device_edit = QLineEdit()
         self.jlink_device_edit.setPlaceholderText("TM4C123GH6PM")
@@ -446,12 +457,27 @@ class ProbeRow(ChannelRow):
         )
         self.openocd_search_edit = QLineEdit()
         self.openocd_search_edit.setPlaceholderText("optional")
+        self.rtt_addr_edit = QLineEdit()
+        self.rtt_addr_edit.setPlaceholderText(f"{DEFAULT_RTT_ADDRESS:#x}")
+        self.rtt_addr_edit.setMaximumWidth(100)
+        self.rtt_size_edit = QLineEdit()
+        self.rtt_size_edit.setPlaceholderText(f"{DEFAULT_RTT_SIZE:#x}")
+        self.rtt_size_edit.setMaximumWidth(80)
+        rtt_range_tip = (
+            "RAM range OpenOCD searches for the RTT control block (decimal or 0x hex); only used "
+            "when an RTT port is set"
+        )
+        self.rtt_addr_edit.setToolTip(rtt_range_tip)
+        self.rtt_size_edit.setToolTip(rtt_range_tip)
 
         openocd_row = QHBoxLayout()
         openocd_row.addWidget(QLabel("Config"))
         openocd_row.addWidget(self.openocd_config_combo, stretch=2)
         openocd_row.addWidget(QLabel("Search dir"))
         openocd_row.addWidget(self.openocd_search_edit, stretch=1)
+        openocd_row.addWidget(QLabel("RTT search"))
+        openocd_row.addWidget(self.rtt_addr_edit)
+        openocd_row.addWidget(self.rtt_size_edit)
 
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("auto-detect (PATH / standard install folders)")
@@ -471,6 +497,7 @@ class ProbeRow(ChannelRow):
             self.speed_edit,
             self.gdb_edit,
             self.telnet_edit,
+            self.rtt_edit,
             self.path_edit,
             browse_btn,
         ]
@@ -485,7 +512,12 @@ class ProbeRow(ChannelRow):
                 self.stlink_programmer_edit,
                 programmer_btn,
             ],
-            "openocd": [self.openocd_config_combo, self.openocd_search_edit],
+            "openocd": [
+                self.openocd_config_combo,
+                self.openocd_search_edit,
+                self.rtt_addr_edit,
+                self.rtt_size_edit,
+            ],
         }
 
         self.form.addRow("Type:", row1)
@@ -514,6 +546,9 @@ class ProbeRow(ChannelRow):
         ports = {_optional_int_safe(self.gdb_edit) or gdb_default}
         if telnet_default is not None:
             ports.add(_optional_int_safe(self.telnet_edit) or telnet_default)
+        rtt_port = _optional_int_safe(self.rtt_edit)
+        if rtt_port is not None and kind != "stlink":
+            ports.add(rtt_port)
         return ports
 
     def used_devices(self) -> set[str]:
@@ -543,6 +578,9 @@ class ProbeRow(ChannelRow):
             bind_address=bind_address,
             gdb_port=_optional_int(self.gdb_edit),
             telnet_port=_optional_int(self.telnet_edit) if kind != "stlink" else None,
+            rtt_port=_optional_int(self.rtt_edit) if kind != "stlink" else None,
+            rtt_address=_optional_int(self.rtt_addr_edit, 0) if kind == "openocd" else None,
+            rtt_size=_optional_int(self.rtt_size_edit, 0) if kind == "openocd" else None,
             speed_khz=_optional_int(self.speed_edit),
             device=device or None,
             interface=interface_combo.currentText(),
@@ -576,6 +614,13 @@ class ProbeRow(ChannelRow):
             self.telnet_edit.clear()
             self.telnet_edit.setPlaceholderText("n/a")
             self.telnet_edit.setEnabled(False)
+        if text == "stlink":
+            # ST-LINK_gdbserver cannot serve RTT; OpenOCD with interface/stlink.cfg can.
+            self.rtt_edit.clear()
+            self.rtt_edit.setPlaceholderText("n/a")
+            self.rtt_edit.setEnabled(False)
+        elif enabled:
+            self.rtt_edit.setPlaceholderText("off")
         speed_hint = {"jlink": str(DEFAULT_JLINK_SPEED_KHZ)}.get(text, "tool" if enabled else "")
         self.speed_edit.setPlaceholderText(speed_hint)
 

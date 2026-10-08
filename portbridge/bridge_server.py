@@ -39,6 +39,9 @@ Usage examples:
     # SEGGER J-Link GDB server (J-Link Software Pack installed), GDB on :2331
     python -m portbridge --probe jlink --jlink-device TM4C123GH6PM
 
+    # J-Link, also serving SEGGER RTT channel 0 on :19021 (OpenOCD works the same way)
+    python -m portbridge --probe jlink --jlink-device TM4C123GH6PM --probe-rtt-port 19021
+
     # ST-LINK GDB server (STM32CubeCLT or STM32CubeIDE installed), GDB on :61234
     python -m portbridge --probe stlink
 
@@ -90,6 +93,11 @@ from .server_errors import BridgeServerError
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+def _int_auto(text: str) -> int:
+    """argparse type for addresses and sizes: decimal or ``0x`` hex."""
+    return int(text, 0)
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,6 +195,28 @@ def parse_args() -> argparse.Namespace:
         help="Telnet TCP port (default: 2333 for jlink, 4444 for openocd; stlink has none)",
     )
     probe_group.add_argument(
+        "--probe-rtt-port",
+        type=int,
+        metavar="PORT",
+        help="Serve SEGGER RTT channel 0 on this TCP port (jlink and openocd; conventionally "
+        "19021). Off by default. ST-LINK_gdbserver has no RTT: use --probe openocd with "
+        "interface/stlink.cfg.",
+    )
+    probe_group.add_argument(
+        "--openocd-rtt-address",
+        type=_int_auto,
+        metavar="ADDR",
+        help="With --probe openocd and --probe-rtt-port: start of the RAM range searched for the "
+        "RTT control block (default: 0x20000000).",
+    )
+    probe_group.add_argument(
+        "--openocd-rtt-size",
+        type=_int_auto,
+        metavar="BYTES",
+        help="With --probe openocd and --probe-rtt-port: size of the RAM range searched for the "
+        "RTT control block (default: 0x10000).",
+    )
+    probe_group.add_argument(
         "--probe-speed",
         type=int,
         help="Debug interface speed in kHz (default: 4000 for jlink, tool default otherwise)",
@@ -276,8 +306,9 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="SPEC",
         help="Add another debug probe. Repeatable. SPEC is kind=jlink|stlink|openocd plus any of "
-        "path, gdb, telnet, speed, device, interface, serial, programmer, connect, ap, board, "
-        "config, search; e.g. kind=stlink,serial=066DFF48,gdb=61244,connect=under-reset",
+        "path, gdb, telnet, rtt, rtt-address, rtt-size, speed, device, interface, serial, "
+        "programmer, connect, ap, board, config, search; "
+        "e.g. kind=stlink,serial=066DFF48,gdb=61244,connect=under-reset",
     )
     probe_group.add_argument(
         "--list-probes",
@@ -339,6 +370,9 @@ def _build_probe_config(args: argparse.Namespace) -> ProbeConfig | None:
         bind_address=args.bind,
         gdb_port=args.probe_gdb_port,
         telnet_port=args.probe_telnet_port,
+        rtt_port=getattr(args, "probe_rtt_port", None),
+        rtt_address=getattr(args, "openocd_rtt_address", None) if probe == "openocd" else None,
+        rtt_size=getattr(args, "openocd_rtt_size", None) if probe == "openocd" else None,
         speed_khz=args.probe_speed,
         device=device,
         interface=interface,

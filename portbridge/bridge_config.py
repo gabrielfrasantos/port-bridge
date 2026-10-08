@@ -15,6 +15,7 @@ from .probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
     PROBE_KINDS,
+    RTT_STLINK_HINT,
     STLINK_CONNECT_MODES,
     STLINK_INTERFACES,
     STLINK_MAX_ACCESS_PORT,
@@ -97,6 +98,8 @@ def find_conflicts(config: BridgeConfig) -> list[str]:
         telnet = probe.resolved_telnet_port
         if telnet is not None:
             claim(f"TCP port {telnet}", f"{owner} (telnet)")
+        if probe.rtt_port is not None:
+            claim(f"TCP port {probe.rtt_port}", f"{owner} (RTT)")
 
     return [
         f"{resource} is used by {' and '.join(owners)}"
@@ -131,7 +134,13 @@ def find_invalid_values(config: BridgeConfig) -> list[str]:
         owner = f"{probe.kind} probe"
         port(f"{owner} (GDB)", probe.resolved_gdb_port)
         port(f"{owner} (telnet)", probe.resolved_telnet_port)
+        port(f"{owner} (RTT)", probe.rtt_port)
         positive(owner, "speed", probe.speed_khz)
+        positive(owner, "RTT search size", probe.rtt_size)
+        if probe.rtt_address is not None and probe.rtt_address < 0:
+            problems.append(f"{owner}: RTT search address must not be negative")
+        if probe.rtt_port is not None and probe.kind == "stlink":
+            problems.append(f"{owner}: {RTT_STLINK_HINT}")
         if probe.access_port is not None and not 0 <= probe.access_port <= STLINK_MAX_ACCESS_PORT:
             problems.append(
                 f"{owner}: access port must be 0-{STLINK_MAX_ACCESS_PORT}, got {probe.access_port}"
@@ -160,6 +169,9 @@ PROBE_SPEC_KEYS = (
     "path",
     "gdb",
     "telnet",
+    "rtt",
+    "rtt-address",
+    "rtt-size",
     "speed",
     "device",
     "interface",
@@ -208,6 +220,17 @@ def _int(spec: dict[str, list[str]], key: str) -> int | None:
         return int(value)
     except ValueError:
         raise ValueError(f"'{key}' must be an integer, got '{value}'") from None
+
+
+def _int_auto(spec: dict[str, list[str]], key: str) -> int | None:
+    """Like ``_int`` but accepts ``0x`` prefixes, for addresses and sizes."""
+    value = _one(spec, key)
+    if value is None:
+        return None
+    try:
+        return int(value, 0)
+    except ValueError:
+        raise ValueError(f"'{key}' must be an integer (decimal or 0x hex), got '{value}'") from None
 
 
 def _required(spec: dict[str, list[str]], key: str, what: str) -> str:
@@ -273,6 +296,12 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
         raise ValueError("'connect=' applies to stlink probes only")
     if kind != "stlink" and _one(spec, "ap") is not None:
         raise ValueError("'ap=' applies to stlink probes only")
+    if kind == "stlink" and _one(spec, "rtt") is not None:
+        raise ValueError(f"'rtt=' is not supported for stlink probes: {RTT_STLINK_HINT}")
+    if kind != "openocd" and (
+        _one(spec, "rtt-address") is not None or _one(spec, "rtt-size") is not None
+    ):
+        raise ValueError("'rtt-address=' and 'rtt-size=' apply to openocd probes only")
 
     return ProbeConfig(
         kind=kind,
@@ -280,6 +309,9 @@ def probe_from_spec(text: str, bind_address: str) -> ProbeConfig:
         bind_address=bind_address,
         gdb_port=_int(spec, "gdb"),
         telnet_port=_int(spec, "telnet"),
+        rtt_port=_int(spec, "rtt"),
+        rtt_address=_int_auto(spec, "rtt-address"),
+        rtt_size=_int_auto(spec, "rtt-size"),
         speed_khz=_int(spec, "speed"),
         device=device,
         interface=interface,
