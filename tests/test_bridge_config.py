@@ -119,6 +119,41 @@ class TestSpecConverters(unittest.TestCase):
 
         self.assertEqual(cfg.configs, ["board/ek-tm4c123gxl.cfg", "extra.cfg"])
 
+    def test_probe_spec_rtt_is_off_by_default(self):
+        for spec in ("kind=jlink,device=X", "kind=openocd,board=ek-tm4c123gxl", "kind=stlink"):
+            with self.subTest(spec=spec):
+                cfg = probe_from_spec(spec, "127.0.0.1")
+
+                self.assertIsNone(cfg.rtt_port)
+                self.assertIsNone(cfg.rtt_address)
+                self.assertIsNone(cfg.rtt_size)
+
+    def test_probe_spec_rtt_port(self):
+        self.assertEqual(probe_from_spec("kind=jlink,device=X,rtt=19021", "x").rtt_port, 19021)
+        cfg = probe_from_spec("kind=openocd,board=ek-tm4c123gxl,rtt=9090", "x")
+
+        self.assertEqual(cfg.rtt_port, 9090)
+
+    def test_probe_spec_openocd_rtt_search_range_accepts_hex(self):
+        cfg = probe_from_spec(
+            "kind=openocd,board=ek-tm4c123gxl,rtt=19021,rtt-address=0x1FFF0000,rtt-size=4096", "x"
+        )
+
+        self.assertEqual(cfg.rtt_address, 0x1FFF0000)
+        self.assertEqual(cfg.rtt_size, 4096)
+
+    def test_probe_spec_rtt_validation(self):
+        cases = {
+            "kind=stlink,rtt=19021": "interface/stlink.cfg",
+            "kind=jlink,device=X,rtt=19021,rtt-address=0x20000000": "openocd probes only",
+            "kind=jlink,device=X,rtt=19021,rtt-size=1024": "openocd probes only",
+            "kind=openocd,board=ek-tm4c123gxl,rtt=nope": "'rtt' must be an integer",
+            "kind=openocd,board=ek-tm4c123gxl,rtt-address=zz": "'rtt-address' must be an integer",
+        }
+        for spec, message in cases.items():
+            with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, message):
+                probe_from_spec(spec, "127.0.0.1")
+
     def test_probe_spec_validation(self):
         cases = {
             "gdb=1": "requires 'kind='",
@@ -169,6 +204,39 @@ class TestFindConflicts(unittest.TestCase):
         self.assertIn("TCP port 2331", conflicts[0])
         self.assertIn("TCP port 2333", conflicts[1])
 
+    def test_rtt_ports_are_claimed(self):
+        cfg = BridgeConfig(
+            probes=[
+                ProbeConfig(kind="jlink", rtt_port=19021),
+                ProbeConfig(kind="openocd", rtt_port=19021),
+            ]
+        )
+
+        self.assertEqual(
+            find_conflicts(cfg),
+            ["TCP port 19021 is used by jlink probe (RTT) and openocd probe (RTT)"],
+        )
+
+    def test_rtt_port_clashes_with_another_channel(self):
+        cfg = BridgeConfig(
+            serials=[SerialConfig("COM3", tcp_port=19021)],
+            probes=[ProbeConfig(kind="jlink", rtt_port=19021)],
+        )
+
+        self.assertEqual(
+            find_conflicts(cfg), ["TCP port 19021 is used by serial COM3 and jlink probe (RTT)"]
+        )
+
+    def test_distinct_rtt_ports_do_not_conflict(self):
+        cfg = BridgeConfig(
+            probes=[
+                ProbeConfig(kind="jlink", rtt_port=19021),
+                ProbeConfig(kind="openocd", rtt_port=19022),
+            ]
+        )
+
+        self.assertEqual(find_conflicts(cfg), [])
+
     def test_reports_duplicate_devices(self):
         cfg = BridgeConfig(
             serials=[SerialConfig("COM3", tcp_port=5000), SerialConfig("COM3", tcp_port=5002)],
@@ -217,6 +285,32 @@ class TestFindInvalidValues(unittest.TestCase):
 
         self.assertEqual(len(problems), 1)
         self.assertIn("access port must be 0-255", problems[0])
+
+    def test_reports_invalid_rtt_values(self):
+        cfg = BridgeConfig(
+            probes=[
+                ProbeConfig(kind="openocd", rtt_port=70000, rtt_size=0, rtt_address=-1),
+                ProbeConfig(kind="jlink", rtt_port=19021, gdb_port=2400, telnet_port=2401),
+            ]
+        )
+
+        self.assertEqual(
+            find_invalid_values(cfg),
+            [
+                "openocd probe (RTT): TCP port 70000 is outside 1-65535",
+                "openocd probe: RTT search size must be positive, got 0",
+                "openocd probe: RTT search address must not be negative",
+            ],
+        )
+
+    def test_reports_stlink_rtt_as_unsupported(self):
+        cfg = BridgeConfig(probes=[ProbeConfig(kind="stlink", rtt_port=19021)])
+
+        problems = find_problems(cfg)
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("stlink probe: ST-LINK_gdbserver has no RTT support", problems[0])
+        self.assertIn("interface/stlink.cfg", problems[0])
 
     def test_reports_non_st_stlink_device(self):
         cfg = BridgeConfig(

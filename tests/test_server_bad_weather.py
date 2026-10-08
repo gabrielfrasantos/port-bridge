@@ -696,6 +696,7 @@ def probe_args(**overrides):
         "probe_path": None,
         "probe_gdb_port": None,
         "probe_telnet_port": None,
+        "probe_rtt_port": None,
         "probe_speed": None,
         "jlink_device": None,
         "jlink_interface": "SWD",
@@ -710,6 +711,8 @@ def probe_args(**overrides):
         "openocd_config": [],
         "openocd_search": [],
         "openocd_command": [],
+        "openocd_rtt_address": None,
+        "openocd_rtt_size": None,
         "add_serial": [],
         "add_can": [],
         "add_probe": [],
@@ -862,6 +865,76 @@ class TestBridgeServerProbe(unittest.IsolatedAsyncioTestCase):
             bridge_server._build_probe_config(args)
 
         self.assertEqual(ctx.exception.code, 1)
+
+    def test_build_probe_config_rtt_is_off_by_default(self):
+        for kind, extra in (
+            ("jlink", {"jlink_device": "X"}),
+            ("openocd", {"openocd_config": ["a"]}),
+        ):
+            with self.subTest(kind=kind):
+                cfg = bridge_server._build_probe_config(probe_args(probe=kind, **extra))
+
+                assert cfg is not None
+                self.assertIsNone(cfg.rtt_port)
+
+    def test_build_probe_config_jlink_rtt_port(self):
+        cfg = bridge_server._build_probe_config(
+            probe_args(probe="jlink", jlink_device="X", probe_rtt_port=19021)
+        )
+
+        assert cfg is not None
+        self.assertEqual(cfg.rtt_port, 19021)
+        self.assertIsNone(cfg.rtt_address)
+
+    def test_build_probe_config_openocd_rtt_search_range(self):
+        args = probe_args(
+            openocd_config=["a.cfg"],
+            probe_rtt_port=19021,
+            openocd_rtt_address=0x1FFF0000,
+            openocd_rtt_size=0x2000,
+        )
+
+        cfg = bridge_server._build_probe_config(args)
+
+        assert cfg is not None
+        self.assertEqual(cfg.rtt_port, 19021)
+        self.assertEqual(cfg.rtt_address, 0x1FFF0000)
+        self.assertEqual(cfg.rtt_size, 0x2000)
+
+    def test_build_probe_config_ignores_openocd_rtt_range_for_other_probes(self):
+        args = probe_args(
+            probe="jlink",
+            jlink_device="X",
+            probe_rtt_port=19021,
+            openocd_rtt_address=0x1FFF0000,
+            openocd_rtt_size=0x2000,
+        )
+
+        cfg = bridge_server._build_probe_config(args)
+
+        assert cfg is not None
+        self.assertIsNone(cfg.rtt_address)
+        self.assertIsNone(cfg.rtt_size)
+
+    async def test_stlink_rtt_is_rejected_before_anything_starts(self):
+        started = mock.Mock()
+        logs, exit_context = await self._run_main(
+            probe_args(probe="stlink", probe_rtt_port=19021), started
+        )
+
+        self.assertEqual(exit_context.exception.code, 1)
+        self.assertIn("interface/stlink.cfg", logs.output[0])
+        started.assert_not_called()
+
+    async def test_rtt_port_clash_with_gdb_port_is_rejected(self):
+        started = mock.Mock()
+        args = probe_args(openocd_config=["a.cfg"], probe_rtt_port=3333)
+
+        logs, exit_context = await self._run_main(args, started)
+
+        self.assertEqual(exit_context.exception.code, 1)
+        self.assertIn("TCP port 3333", logs.output[0])
+        started.assert_not_called()
 
 
 class TestBridgeServerMultipleChannels(unittest.IsolatedAsyncioTestCase):

@@ -272,6 +272,58 @@ class TestCommandBuilders(unittest.TestCase):
         finder.assert_called_once_with("/x", "st")
         self.assertEqual(cmd[cmd.index("-cp") + 1], "/cp/bin")
 
+    def test_rtt_is_off_unless_configured(self):
+        self.assertNotIn("-RTTTelnetPort", build_jlink_command(jlink_config(), "jl"))
+        self.assertFalse(
+            any("rtt" in arg for arg in build_openocd_command(openocd_config(), "openocd"))
+        )
+
+    def test_jlink_rtt_port(self):
+        cmd = build_jlink_command(jlink_config(rtt_port=19021), "jl")
+
+        self.assertEqual(cmd[cmd.index("-RTTTelnetPort") + 1], "19021")
+        self.assertEqual(cmd[-2:], ["-LocalhostOnly", "1"])
+
+    def test_openocd_rtt_uses_default_search_range_and_channel_zero(self):
+        cmd = build_openocd_command(openocd_config(rtt_port=19021), "openocd")
+
+        self.assertEqual(
+            cmd[-8:],
+            [
+                "-c",
+                "init",
+                "-c",
+                'rtt setup 0x20000000 0x10000 "SEGGER RTT"',
+                "-c",
+                "rtt start",
+                "-c",
+                "rtt server start 19021 0",
+            ],
+        )
+
+    def test_openocd_rtt_custom_search_range(self):
+        cfg = openocd_config(rtt_port=9090, rtt_address=0x1FFF0000, rtt_size=4096)
+
+        cmd = build_openocd_command(cfg, "openocd")
+
+        self.assertIn('rtt setup 0x1fff0000 0x1000 "SEGGER RTT"', cmd)
+        self.assertIn("rtt server start 9090 0", cmd)
+
+    def test_openocd_rtt_runs_after_user_commands(self):
+        cfg = openocd_config(
+            rtt_port=19021, commands=["transport select swd"], speed_khz=500, bind_address="0.0.0.0"
+        )
+
+        cmd = build_openocd_command(cfg, "openocd")
+
+        self.assertLess(cmd.index("transport select swd"), cmd.index("init"))
+        self.assertLess(cmd.index("adapter speed 500"), cmd.index("init"))
+        self.assertIn("bindto 0.0.0.0", cmd)
+
+    def test_stlink_rejects_rtt(self):
+        with self.assertRaisesRegex(ValueError, "interface/stlink.cfg"):
+            build_stlink_command(stlink_config(rtt_port=19021), "st", "/cp")
+
 
 CUBEPROGRAMMER_F446 = """
       -------------------------------------------------------------------
@@ -843,6 +895,65 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
             await server.start()
 
         self.assertEqual(calls, [])
+
+    async def test_rtt_port_in_use_is_reported_before_launch(self):
+        calls = []
+        probed = []
+
+        async def only_rtt_open(_host, port):
+            probed.append(port)
+            return port == 19021
+
+        cfg = openocd_config(rtt_port=19021)
+        server = make_server(cfg, FakeProcess(), calls, port_probe=only_rtt_open)
+
+        with self.assertRaisesRegex(PortUnavailableError, "19021"):
+            await server.start()
+
+        self.assertEqual(calls, [])
+        self.assertEqual(probed, [3333, 4444, 19021])
+
+    async def test_rtt_port_is_logged_when_listening(self):
+        proc = FakeProcess(["Listening on port 3333 for gdb connections"])
+        server = make_server(openocd_config(rtt_port=19021), proc)
+
+        with self.assertLogs(probe_server.logger, level="INFO") as logs:
+            await server.start()
+
+        self.assertTrue(any("RTT port 19021" in line for line in logs.output))
+        await server.stop()
+
+    async def test_stlink_rtt_is_refused_before_launch(self):
+        calls = []
+        server = make_server(stlink_config(rtt_port=19021), FakeProcess(), calls)
+
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            self.assertRaisesRegex(HardwareUnavailableError, "interface/stlink.cfg"),
+        ):
+            await server.start()
+
+        self.assertEqual(calls, [])
+
+    async def test_jlink_rtt_on_all_interfaces_warns_about_old_software(self):
+        proc = FakeProcess(["Waiting for GDB connection..."])
+        cfg = jlink_config(rtt_port=19021, bind_address="0.0.0.0")
+        server = make_server(cfg, proc)
+
+        with self.assertLogs(probe_server.logger, level="WARNING") as logs:
+            await server.start()
+
+        self.assertTrue(any("V7.80c" in line for line in logs.output))
+        await server.stop()
+
+    async def test_jlink_rtt_on_loopback_does_not_warn(self):
+        proc = FakeProcess(["Waiting for GDB connection..."])
+        server = make_server(jlink_config(rtt_port=19021), proc)
+
+        with self.assertNoLogs(probe_server.logger, level="WARNING"):
+            await server.start()
+
+        await server.stop()
 
     async def test_launch_failure_is_hardware_unavailable(self):
         async def failing_factory(*_argv, **_kwargs):
