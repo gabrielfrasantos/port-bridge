@@ -61,11 +61,13 @@ Usage examples:
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 from collections.abc import Callable
 from typing import TypeVar
 
+from . import process_guard
 from .bridge_config import (
     BridgeConfig,
     CanConfig,
@@ -77,6 +79,7 @@ from .bridge_config import (
     serial_from_spec,
 )
 from .can_server import CanBusOverTcpServer
+from .lifecycle import run_startup, stop_servers
 from .probe_server import (
     JLINK_INTERFACES,
     OPENOCD_PRESETS,
@@ -495,62 +498,84 @@ async def main() -> None:
         sys.exit(1)
 
     servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer] = []
-
-    try:
-        for serial in config.serials:
-            serial_srv = SerialOverTcpServer(
-                serial_port=serial.port,
-                baudrate=serial.baudrate,
-                tcp_port=serial.tcp_port,
-                bind_address=config.bind_address,
-            )
-            await serial_srv.start()
-            servers.append(serial_srv)
-
-        for can in config.cans:
-            can_srv = CanBusOverTcpServer(
-                interface=can.interface,
-                channel=can.channel,
-                bitrate=can.bitrate,
-                tcp_port=can.tcp_port,
-                tty_baudrate=can.tty_baudrate,
-                bind_address=config.bind_address,
-            )
-            await can_srv.start()
-            servers.append(can_srv)
-
-        for probe_config in config.probes:
-            probe_srv = DebugProbeServer(probe_config)
-            await probe_srv.start()
-            servers.append(probe_srv)
-    except BridgeServerError as exc:
-        logger.error("Bridge server startup failed: %s", exc)
-        for srv in reversed(servers):
-            await srv.stop()
-        sys.exit(1)
-    except Exception:
-        logger.exception("Unexpected bridge server startup failure")
-        for srv in reversed(servers):
-            await srv.stop()
-        sys.exit(1)
-
-    logger.info("Bridge server running. Press Ctrl+C to stop.")
-
     stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
+    _install_signal_handlers(asyncio.get_running_loop(), stop_event)
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop_event.set)
-        except NotImplementedError:
-            signal.signal(sig, lambda *_: stop_event.set())
-
+    exit_code = 0
     try:
-        await stop_event.wait()
+        try:
+            if not await run_startup(_start_servers(config, servers), stop_event):
+                logger.info("Interrupted during startup")
+            else:
+                logger.info("Bridge server running. Press Ctrl+C to stop.")
+                await stop_event.wait()
+        except BridgeServerError as exc:
+            logger.error("Bridge server startup failed: %s", exc)
+            exit_code = 1
+        except Exception:
+            logger.exception("Unexpected bridge server startup failure")
+            exit_code = 1
     finally:
         logger.info("Shutting down...")
-        for srv in servers:
-            await srv.stop()
+        await stop_servers(servers)
+
+    if exit_code:
+        sys.exit(exit_code)
+
+
+async def _start_servers(
+    config: BridgeConfig,
+    servers: list[SerialOverTcpServer | CanBusOverTcpServer | DebugProbeServer],
+) -> None:
+    for serial in config.serials:
+        serial_srv = SerialOverTcpServer(
+            serial_port=serial.port,
+            baudrate=serial.baudrate,
+            tcp_port=serial.tcp_port,
+            bind_address=config.bind_address,
+        )
+        await serial_srv.start()
+        servers.append(serial_srv)
+
+    for can in config.cans:
+        can_srv = CanBusOverTcpServer(
+            interface=can.interface,
+            channel=can.channel,
+            bitrate=can.bitrate,
+            tcp_port=can.tcp_port,
+            tty_baudrate=can.tty_baudrate,
+            bind_address=config.bind_address,
+        )
+        await can_srv.start()
+        servers.append(can_srv)
+
+    for probe_config in config.probes:
+        probe_srv = DebugProbeServer(probe_config)
+        await probe_srv.start()
+        servers.append(probe_srv)
+
+
+def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> None:
+    """Request a clean stop on the first signal and kill the children on the second."""
+
+    def request_stop() -> None:
+        if stop_event.is_set():
+            logger.warning("Second stop signal: killing child processes and exiting")
+            process_guard.kill_all()
+            os._exit(1)
+        stop_event.set()
+
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    if hasattr(signal, "SIGBREAK"):
+        signals.append(signal.SIGBREAK)
+
+    for sig in signals:
+        try:
+            loop.add_signal_handler(sig, request_stop)
+        except NotImplementedError:
+            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(request_stop))
 
 
 if __name__ == "__main__":

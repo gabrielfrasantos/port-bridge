@@ -43,6 +43,7 @@ class SerialOverTcpServer:
             )
             self._serial.reset_input_buffer()
         except Exception as exc:
+            await self._close_serial()
             raise HardwareUnavailableError(
                 f"Cannot open serial port {self.serial_port}: {exc}"
             ) from exc
@@ -60,21 +61,25 @@ class SerialOverTcpServer:
                     f"Cannot listen for serial bridge on TCP port {self.tcp_port}: {exc.strerror}"
                 ) from exc
             raise
-        except Exception:
+        except BaseException:
             await self._close_serial()
             raise
 
         logger.info("Serial TCP server listening on %s port %d", self.bind_address, self.tcp_port)
 
     async def stop(self) -> None:
-        await self._close_writer(self._writer)
+        # Stop accepting first: on Python 3.12.1+ wait_closed() also waits for a client that
+        # connected between closing the writer and closing the listener.
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
 
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
-
-        await self._close_serial()
+        try:
+            await self._close_writer(self._writer)
+            if server is not None:
+                await server.wait_closed()
+        finally:
+            await self._close_serial()
 
     async def _close_serial(self) -> None:
         if self._serial is not None:
@@ -124,7 +129,7 @@ class SerialOverTcpServer:
             for task in done:
                 task.result()
         except asyncio.CancelledError:
-            pass
+            raise
         except (ConnectionError, OSError) as exc:
             logger.warning("Serial bridge session ended: %s", exc)
         except Exception:

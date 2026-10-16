@@ -184,21 +184,25 @@ class CanBusOverTcpServer:
                     f"Cannot listen for CAN bridge on TCP port {self.tcp_port}: {exc.strerror}"
                 ) from exc
             raise
-        except Exception:
+        except BaseException:
             self._close_bus()
             raise
 
         logger.info("CAN TCP server listening on %s port %d", self.bind_address, self.tcp_port)
 
     async def stop(self) -> None:
-        await self._close_writer(self._writer)
+        # Stop accepting first: on Python 3.12.1+ wait_closed() also waits for a client that
+        # connected between closing the writer and closing the listener.
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
 
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
-
-        self._close_bus()
+        try:
+            await self._close_writer(self._writer)
+            if server is not None:
+                await server.wait_closed()
+        finally:
+            self._close_bus()
 
     def _close_bus(self) -> None:
         if self._bus is not None:

@@ -1,7 +1,9 @@
 import asyncio
+import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -434,7 +436,9 @@ class TestVerifyStlinkTarget(unittest.TestCase):
         completed = subprocess.CompletedProcess([], returncode, stdout=output, stderr="")
         with (
             mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
-            mock.patch.object(probe_server.subprocess, "run", return_value=completed) as run,
+            mock.patch.object(
+                probe_server.process_guard, "run_tracked", return_value=completed
+            ) as run,
         ):
             found = probe_server.verify_stlink_target(stlink_config(**values), "/st/gdb")
         return found, run.call_args.args[0]
@@ -484,7 +488,9 @@ class TestVerifyStlinkTarget(unittest.TestCase):
     def test_launch_failure_raises(self):
         with (
             mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
-            mock.patch.object(probe_server.subprocess, "run", side_effect=OSError("denied")),
+            mock.patch.object(
+                probe_server.process_guard, "run_tracked", side_effect=OSError("denied")
+            ),
             self.assertRaisesRegex(HardwareUnavailableError, "denied"),
         ):
             probe_server.verify_stlink_target(stlink_config(device="STM32F446RE"), "/st/gdb")
@@ -1029,6 +1035,152 @@ class TestDebugProbeServer(unittest.IsolatedAsyncioTestCase):
         server = make_server(openocd_config(), FakeProcess())
 
         await server.stop()
+
+
+class TestProbeChildLifetime(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.pidfile = Path(self._tmp.name) / "helper.pid"
+
+    def tearDown(self):
+        probe_server.process_guard.kill_all()
+        self._tmp.cleanup()
+
+    def helper_pid(self):
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline:
+            if self.pidfile.exists() and self.pidfile.read_text().strip():
+                return int(self.pidfile.read_text())
+        raise AssertionError("helper did not start")
+
+    @staticmethod
+    def running(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        try:
+            return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return True
+
+    def make_wrapper_server(self, script):
+        async def factory(*_argv, **kwargs):
+            return await asyncio.create_subprocess_exec("sh", "-c", script, **kwargs)
+
+        return DebugProbeServer(
+            openocd_config(),
+            process_factory=factory,
+            port_probe=port_closed,
+            tool_finder=lambda _cfg: "/usr/bin/tool",
+            stop_timeout=0.5,
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX process groups")
+    async def test_stop_also_stops_helper_processes_of_a_wrapper_script(self):
+        server = self.make_wrapper_server(
+            "echo 'Listening on port 3333 for gdb connections'; "
+            f"sleep 300 & echo $! > {self.pidfile}; wait"
+        )
+        await server.start()
+        helper = self.helper_pid()
+        self.assertTrue(self.running(helper))
+
+        await server.stop()
+
+        for _ in range(100):
+            if not self.running(helper):
+                break
+            await asyncio.sleep(0.05)
+        self.assertFalse(self.running(helper))
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX process groups")
+    async def test_stop_kills_a_wrapper_tree_that_ignores_terminate(self):
+        server = self.make_wrapper_server(
+            "trap '' TERM; echo 'Listening on port 3333 for gdb connections'; "
+            f"sleep 300 & echo $! > {self.pidfile}; wait"
+        )
+        await server.start()
+        helper = self.helper_pid()
+
+        with self.assertLogs(probe_server.logger, level="WARNING"):
+            await server.stop()
+
+        for _ in range(100):
+            if not self.running(helper):
+                break
+            await asyncio.sleep(0.05)
+        self.assertFalse(self.running(helper))
+
+    async def test_children_are_started_isolated_from_our_session(self):
+        calls = []
+        proc = FakeProcess(["Listening on port 3333 for gdb connections"])
+        server = make_server(openocd_config(), proc, calls)
+
+        await server.start()
+        await server.stop()
+
+        self.assertEqual(
+            calls[0][1],
+            probe_server.process_guard.spawn_kwargs()
+            | {
+                "stdin": asyncio.subprocess.DEVNULL,
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.STDOUT,
+            },
+        )
+
+    async def test_cancel_during_stop_still_kills_the_process(self):
+        proc = FakeProcess(["Listening on port 3333 for gdb connections"], ignore_terminate=True)
+        server = make_server(openocd_config(), proc, stop_timeout=30)
+        await server.start()
+
+        task = asyncio.create_task(server.stop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        self.assertTrue(proc.killed)
+
+    async def test_stop_is_idempotent(self):
+        proc = FakeProcess(["Listening on port 3333 for gdb connections"])
+        server = make_server(openocd_config(), proc)
+        await server.start()
+
+        await server.stop()
+        await server.stop()
+
+        self.assertTrue(proc.terminated)
+
+    async def test_cancelled_start_kills_the_target_verifier(self):
+        started = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def verifier(_cfg, _exe):
+            loop.call_soon_threadsafe(started.set)
+            while not killed.is_set():
+                killed.wait(0.01)
+            return "STM32F446"
+
+        killed = threading.Event()
+        server = make_server(
+            stlink_config(device="STM32F446RE"), FakeProcess(), target_verifier=verifier
+        )
+
+        with (
+            mock.patch.object(probe_server, "find_stm32cubeprogrammer", return_value="/cp"),
+            mock.patch.object(
+                probe_server.process_guard, "kill_all", side_effect=lambda *_: killed.set()
+            ) as kill_all,
+        ):
+            task = asyncio.create_task(server.start())
+            await asyncio.wait_for(started.wait(), 5)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        kill_all.assert_called_once_with("verifier")
 
 
 class TestProbeDiscovery(unittest.TestCase):

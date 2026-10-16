@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import can
@@ -54,9 +55,17 @@ class CandleBus:
             )
         self._device = devices[channel]
         self._device.open()
-        self._ch = self._device.channel(0)
-        self._ch.set_bitrate(bitrate)
-        self._ch.start()
+        try:
+            self._ch = self._device.channel(0)
+            self._ch.set_bitrate(bitrate)
+            self._ch.start()
+        except BaseException:
+            # __init__ never completes, so nobody else will close the device.
+            with contextlib.suppress(Exception):
+                self._ch.stop()
+            with contextlib.suppress(Exception):
+                self._device.close()
+            raise
 
     # ------------------------------------------------------------------
     # Public interface expected by can_server.CanBusOverTcpServer
