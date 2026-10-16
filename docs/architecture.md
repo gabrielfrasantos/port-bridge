@@ -86,10 +86,23 @@ start one server per entry. A failed start stops the ones already running, in re
 
 ### Shutdown sequence
 
-1. SIGINT / SIGTERM sets `stop_event`.
+1. SIGINT / SIGTERM / SIGHUP (and SIGBREAK on Windows) set `stop_event`. The handlers are installed
+   before the servers start, so a signal during startup cancels it. A second signal kills the
+   child processes and exits immediately.
 2. `await stop_event.wait()` returns.
-3. `finally:` block calls `await srv.stop()` for each server in order.
-4. `stop()` closes the TCP writer, closes the `asyncio.Server`, then shuts down the hardware adapter.
+3. `finally:` block calls `lifecycle.stop_servers()`: every server is stopped in reverse start
+   order, and one failing `stop()` is logged without skipping the rest.
+4. `stop()` closes the `asyncio.Server`, the TCP writer, then shuts down the hardware adapter.
+   `DebugProbeServer.stop()` terminates the child's whole process tree and kills it if it ignores
+   the request.
+
+### Child process lifetime
+
+GDB servers outlive port-bridge unless something kills them, so `process_guard.py` puts each one
+in its own process group (POSIX, `start_new_session`) or Windows job object (`KILL_ON_JOB_CLOSE`).
+`terminate` / `kill` then reach wrapper scripts and helper processes, and an `atexit` hook reaps
+anything the normal path missed. A Windows job also dies with port-bridge itself; on POSIX a
+SIGKILL of port-bridge still orphans the children.
 
 ## GUI thread model
 
@@ -102,7 +115,10 @@ QApplication.exec()               asyncio.run(bridge_main())
   Stop button   ──────────────►  asyncio.run_coroutine_threadsafe(stop(), loop)
 ```
 
-- The asyncio loop runs in a `threading.Thread(daemon=True)`.
+- The asyncio loop runs in a `threading.Thread(daemon=True)`. A daemon thread is killed at
+  interpreter exit, so `QApplication.aboutToQuit` calls `BridgeController.shutdown()`, which stops
+  the bridge and joins the thread. Tray *Quit*, closing the last window and SIGINT / SIGTERM / SIGHUP
+  (which the GUI turns into `QApplication.quit()`) all go through it.
 - Log records are enqueued by a custom `QueueHandler` in the asyncio thread.
 - A `QTimer` on the main thread drains the queue at 100 ms intervals and appends text to `QPlainTextEdit`.
 - Qt signals from `BridgeController` notify the UI of `started`, `stopped`, and `error` events.
@@ -131,7 +147,9 @@ The format is byte-compatible with Linux `struct can_frame`. Clients on any OS d
 
 | Module | Responsibility |
 |--------|---------------|
-| `bridge_server.py` | CLI arg parsing; creates and starts servers; owns the stop event |
+| `bridge_server.py` | CLI arg parsing; creates and starts servers; owns the stop event and signal handlers |
+| `lifecycle.py` | `stop_servers()` (reverse order, failure-tolerant) and `run_startup()` (cancellable startup), shared by the CLI and the GUI |
+| `process_guard.py` | Process group / job object isolation, `atexit` reaping and `run_tracked()` for child processes |
 | `bridge_config.py` | `BridgeConfig` (lists of serial / CAN / probe configs), `--add-*` spec parsing, `find_problems()` |
 | `serial_server.py` | `SerialOverTcpServer`: pyserial ↔ TCP byte passthrough |
 | `can_server.py` | `CanBusOverTcpServer`: python-can ↔ TCP 16-byte CAN frames |
@@ -139,7 +157,7 @@ The format is byte-compatible with Linux `struct can_frame`. Clients on any OS d
 | `probe_server.py` | `DebugProbeServer`: J-Link / ST-LINK / OpenOCD GDB server lifecycle, tool discovery, `list_probes()` |
 | `list_can_interfaces.py` | Enumerate serial ports + CAN adapters across python-can, candle_driver, pyserial |
 | `server_errors.py` | `BridgeServerError`, `HardwareUnavailableError`, `PortUnavailableError`, `ToolNotFoundError` |
-| `gui/bridge_controller.py` | `BridgeController`: asyncio ↔ Qt bridge using daemon thread + `SimpleQueue` |
+| `gui/bridge_controller.py` | `BridgeController`: asyncio ↔ Qt bridge using daemon thread + `SimpleQueue`; `shutdown()` joins the thread |
 | `gui/main_window.py` | `MainWindow`: channel sections, general settings, status indicators, log panel |
 | `gui/channel_rows.py` | `ChannelSection` and the `SerialRow` / `CanRow` / `ProbeRow` widgets behind the "+ Add" buttons |
 | `gui/__main__.py` | GUI entry point |

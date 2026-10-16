@@ -147,6 +147,10 @@ class MainWindow(QMainWindow):
     def set_checker(self, checker: UpdateChecker) -> None:
         self._checker = checker
 
+    def shutdown(self) -> None:
+        """Stop the bridge and wait until its servers and child processes are gone."""
+        self._controller.shutdown()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         from PySide6.QtWidgets import QSystemTrayIcon
 

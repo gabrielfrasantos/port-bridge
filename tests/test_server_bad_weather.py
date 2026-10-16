@@ -49,7 +49,11 @@ from portbridge import (  # noqa: E402
     probe_server,
     serial_server,
 )
-from portbridge.server_errors import BridgeServerError, PortUnavailableError  # noqa: E402
+from portbridge.server_errors import (  # noqa: E402
+    BridgeServerError,
+    HardwareUnavailableError,
+    PortUnavailableError,
+)
 
 
 class FakeAsyncServer:
@@ -270,6 +274,95 @@ class TestSerialServerBadWeather(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(writer.closed)
         self.assertIsNone(server._writer)
 
+    async def test_start_closes_serial_when_reset_fails(self):
+        device = FakeSerialDevice()
+        device.reset_input_buffer = mock.Mock(side_effect=OSError("device removed"))
+        server = serial_server.SerialOverTcpServer(
+            "COM3", 921600, 5000, serial_factory=lambda *_args, **_kwargs: device
+        )
+
+        with self.assertRaises(HardwareUnavailableError):
+            await server.start()
+
+        self.assertTrue(device.closed)
+        self.assertIsNone(server._serial)
+
+    async def test_cancelled_start_closes_serial(self):
+        device = FakeSerialDevice()
+
+        async def hanging_server_factory(_handler, _host, _port):
+            await asyncio.sleep(30)
+
+        server = serial_server.SerialOverTcpServer(
+            "COM3",
+            921600,
+            5000,
+            serial_factory=lambda *_args, **_kwargs: device,
+            server_factory=hanging_server_factory,
+        )
+
+        task = asyncio.create_task(server.start())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        self.assertTrue(device.closed)
+
+    async def test_stop_closes_listener_before_client_and_releases_serial(self):
+        device = FakeSerialDevice()
+        order = []
+        listener = FakeAsyncServer()
+        listener.close = lambda: order.append("listener")
+        writer = FakeWriter()
+        writer.close = lambda: order.append("client")
+        server = serial_server.SerialOverTcpServer(
+            "COM3", 921600, 5000, serial_factory=lambda *_args, **_kwargs: device
+        )
+        server._serial = device
+        server._server = listener
+        server._writer = writer
+
+        await server.stop()
+
+        self.assertEqual(order, ["listener", "client"])
+        self.assertTrue(device.closed)
+        self.assertIsNone(server._server)
+
+    async def test_stop_is_idempotent_and_closes_serial_even_if_client_close_fails(self):
+        device = FakeSerialDevice()
+        server = serial_server.SerialOverTcpServer(
+            "COM3", 921600, 5000, serial_factory=lambda *_args, **_kwargs: device
+        )
+        server._serial = device
+        server._writer = FakeWriter(wait_closed_exception=asyncio.CancelledError())
+
+        with self.assertRaises(asyncio.CancelledError):
+            await server.stop()
+        self.assertTrue(device.closed)
+
+        await server.stop()
+
+    async def test_cancelled_session_propagates_cancellation(self):
+        device = FakeSerialDevice()
+        server = serial_server.SerialOverTcpServer(
+            "COM3", 921600, 5000, serial_factory=lambda *_args, **_kwargs: device
+        )
+        server._serial = device
+        writer = FakeWriter()
+
+        class StalledReader:
+            async def read(self, _size):
+                await asyncio.sleep(30)
+
+        task = asyncio.create_task(server._handle_client(StalledReader(), writer))
+        await asyncio.sleep(0.01)
+        task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(writer.closed)
+
 
 class TestCanServerBadWeather(unittest.IsolatedAsyncioTestCase):
     async def test_start_reports_port_in_use_and_shuts_down_bus(self):
@@ -411,6 +504,48 @@ class TestCanServerBadWeather(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(kwargs["channel"], int)
         self.assertEqual(kwargs["channel"], 1)
 
+    async def test_stop_closes_listener_client_and_bus(self):
+        bus = FakeBus()
+        order = []
+        listener = FakeAsyncServer()
+        listener.close = lambda: order.append("listener")
+        writer = FakeWriter()
+        writer.close = lambda: order.append("client")
+        server = can_server.CanBusOverTcpServer("socketcan", "can0", 500000, 5001)
+        server._bus = bus
+        server._server = listener
+        server._writer = writer
+
+        await server.stop()
+        await server.stop()
+
+        self.assertEqual(order, ["listener", "client"])
+        self.assertTrue(bus.shutdown_called)
+        self.assertIsNone(server._bus)
+
+    async def test_cancelled_start_shuts_down_bus(self):
+        bus = FakeBus()
+
+        async def hanging_server_factory(_handler, _host, _port):
+            await asyncio.sleep(30)
+
+        server = can_server.CanBusOverTcpServer(
+            "socketcan",
+            "can0",
+            500000,
+            5001,
+            bus_factory=lambda **_kwargs: bus,
+            server_factory=hanging_server_factory,
+        )
+
+        task = asyncio.create_task(server.start())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        self.assertTrue(bus.shutdown_called)
+
 
 class TestCandleBus(unittest.TestCase):
     def _make_fake_device(self, read_result=None, read_exception=None):
@@ -514,6 +649,16 @@ class TestCandleBus(unittest.TestCase):
 
         # Should not raise
         bus.shutdown()
+
+    def test_failed_channel_setup_closes_the_device(self):
+        device, ch = self._make_fake_device(read_exception=TimeoutError)
+        ch.start.side_effect = OSError("busy")
+        with self._patch_devices([device]):
+            with self.assertRaises(OSError):
+                candle_bus.CandleBus(channel=0, bitrate=500000)
+
+        device.open.assert_called_once()
+        device.close.assert_called_once()
 
 
 class TestBridgeServerStartup(unittest.IsolatedAsyncioTestCase):
@@ -1051,6 +1196,150 @@ class TestBridgeServerMultipleChannels(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(configs[0].kind, "stlink")
         self.assertEqual(configs[0].bind_address, "0.0.0.0")
+
+
+def serial_can_args():
+    return argparse.Namespace(
+        serial_port="COM3",
+        serial_baudrate=921600,
+        serial_tcp_port=5000,
+        can_interface="socketcan",
+        can_channel="can0",
+        can_bitrate=500000,
+        can_tcp_port=5001,
+        can_tty_baudrate=115200,
+        log_level="ERROR",
+        bind="127.0.0.1",
+    )
+
+
+class TestBridgeServerShutdown(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def stop_after(delay):
+        def install(loop, stop_event):
+            loop.call_later(delay, stop_event.set)
+
+        return install
+
+    async def test_signal_during_startup_cancels_it_and_stops_started_servers(self):
+        events = []
+
+        class StartedSerialServer:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                events.append("serial stopped")
+
+        class HangingCanServer:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def start(self):
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    events.append("can start cancelled")
+                    raise
+
+            async def stop(self):
+                events.append("can stopped")
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=serial_can_args()),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", StartedSerialServer),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", HangingCanServer),
+            mock.patch.object(bridge_server, "_install_signal_handlers", self.stop_after(0.05)),
+            self.assertLogs(bridge_server.logger, level="INFO") as logs,
+        ):
+            await bridge_server.main()
+
+        self.assertEqual(events, ["can start cancelled", "serial stopped"])
+        self.assertTrue(any("Interrupted during startup" in line for line in logs.output))
+
+    async def test_failing_stop_does_not_leave_other_servers_running(self):
+        stopped = []
+
+        def server(name, stop_error=None):
+            class Server:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def start(self):
+                    pass
+
+                async def stop(self):
+                    stopped.append(name)
+                    if stop_error is not None:
+                        raise stop_error
+
+            return Server
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=serial_can_args()),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", server("serial")),
+            mock.patch.object(
+                bridge_server, "CanBusOverTcpServer", server("can", RuntimeError("busy"))
+            ),
+            mock.patch.object(bridge_server, "_install_signal_handlers", self.stop_after(0.05)),
+            self.assertLogs("portbridge.lifecycle", level="ERROR"),
+        ):
+            await bridge_server.main()
+
+        self.assertEqual(stopped, ["can", "serial"])
+
+    async def test_signal_handlers_installed_before_servers_start(self):
+        order = []
+
+        class Server:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def start(self):
+                order.append("start")
+
+            async def stop(self):
+                pass
+
+        def install(loop, stop_event):
+            order.append("handlers")
+            loop.call_later(0.05, stop_event.set)
+
+        with (
+            mock.patch.object(bridge_server, "parse_args", return_value=serial_can_args()),
+            mock.patch.object(bridge_server, "SerialOverTcpServer", Server),
+            mock.patch.object(bridge_server, "CanBusOverTcpServer", Server),
+            mock.patch.object(bridge_server, "_install_signal_handlers", install),
+        ):
+            await bridge_server.main()
+
+        self.assertEqual(order, ["handlers", "start", "start"])
+
+    async def test_second_signal_kills_children_and_exits(self):
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+        callbacks = {}
+        with mock.patch.object(
+            loop, "add_signal_handler", side_effect=lambda sig, cb: callbacks.setdefault(sig, cb)
+        ):
+            bridge_server._install_signal_handlers(loop, stop_event)
+
+        request_stop = callbacks[bridge_server.signal.SIGTERM]
+        request_stop()
+        self.assertTrue(stop_event.is_set())
+
+        with (
+            mock.patch.object(bridge_server.process_guard, "kill_all") as kill_all,
+            mock.patch.object(bridge_server.os, "_exit") as hard_exit,
+            self.assertLogs(bridge_server.logger, level="WARNING"),
+        ):
+            request_stop()
+
+        kill_all.assert_called_once_with()
+        hard_exit.assert_called_once_with(1)
 
 
 class TestBridgeServerListProbes(unittest.IsolatedAsyncioTestCase):

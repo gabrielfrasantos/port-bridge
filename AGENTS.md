@@ -15,6 +15,8 @@ portbridge/
   candle_bus.py         — CandleBus: candle_driver wrapper (Windows Candle API)
   probe_server.py       — DebugProbeServer: J-Link / ST-LINK / OpenOCD GDB server as a managed child process
   list_can_interfaces.py — detect serial ports + CAN adapters on the host
+  lifecycle.py          — stop_servers() (reverse order, failure-tolerant) + run_startup() (cancellable)
+  process_guard.py      — process group / job object isolation + atexit reaping of probe children
   server_errors.py      — BridgeServerError, HardwareUnavailableError, PortUnavailableError
   gui/
     __main__.py         — GUI entry point
@@ -27,13 +29,14 @@ portbridge/
 
 - All bridge code is `async`/`await` with `asyncio.run()` as the root.
 - Blocking hardware calls (`serial.read`, `bus.recv`, `bus.send`) run in `asyncio.get_running_loop().run_in_executor(None, ...)` — never block the event loop directly.
-- Shutdown: a `stop_event = asyncio.Event()` is set by signal handlers; all servers `await srv.stop()` in the `finally` block.
+- Shutdown: a `stop_event = asyncio.Event()` is set by signal handlers (installed before startup); `lifecycle.stop_servers()` stops all servers in reverse order in the `finally` block, tolerating a failing `stop()`.
+- Child processes (GDB servers, verifier tools) are spawned with `process_guard.spawn_kwargs()` and adopted by `process_guard.adopt()` so the whole tree is terminated, never just the leader.
 - One TCP client per channel at a time; a second connection is immediately closed.
 - External tools (JLinkGDBServerCL, ST-LINK_gdbserver, openocd) are spawned with `asyncio.create_subprocess_exec` and their output is drained by a task — never `subprocess.run` on the loop. They own their TCP ports; port-bridge only locates, starts, logs and terminates them.
 
 ## GUI design
 
-- GUI runs on the Qt main thread. The bridge asyncio loop runs in a `threading.Thread` (daemon).
+- GUI runs on the Qt main thread. The bridge asyncio loop runs in a `threading.Thread` (daemon); `QApplication.aboutToQuit` must call `BridgeController.shutdown()` so the bridge and its child processes stop before the process exits.
 - Communication Qt→asyncio: `asyncio.run_coroutine_threadsafe(coro, loop)`.
 - Communication asyncio→Qt: a `queue.SimpleQueue` populated by a custom `logging.Handler`; a `QTimer(interval=100ms)` drains it into `QPlainTextEdit` on the main thread.
 - No `qasync` dependency — the thread-based pattern is simpler and already proven in the original C++ `BridgeController`.
@@ -46,6 +49,7 @@ portbridge/
 | Candle API | not available | `candle_driver` |
 | Serial | `/dev/tty*` | `COM*` |
 | SIGTERM handler | `loop.add_signal_handler` | `signal.signal` fallback |
+| Child process cleanup | own session / process group (`killpg`) | job object (`KILL_ON_JOB_CLOSE`) |
 | J-Link GDB server | `JLinkGDBServerCLExe` (`/opt/SEGGER/JLink*`) | `JLinkGDBServerCL.exe` (`%ProgramFiles%\SEGGER\JLink*`) |
 | ST-LINK GDB server | `ST-LINK_gdbserver` (`/opt/st/stm32cubeclt*/STLink-gdb-server/bin`) | `ST-LINK_gdbserver.exe` (`C:\ST\STM32CubeCLT*\STLink-gdb-server\bin`) |
 | OpenOCD | `openocd` on PATH | `openocd.exe` on PATH; spawn with `CREATE_NO_WINDOW` |

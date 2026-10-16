@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from . import process_guard
 from .server_errors import HardwareUnavailableError, PortUnavailableError, ToolNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,8 @@ _USB_PROBES: dict[tuple[int, int | None], tuple[str, str]] = {
 }
 
 _TAIL_LINES = 10
+_PROBE_KIND = "probe"
+_VERIFIER_KIND = "verifier"
 _STLINK_NOT_HALTED = re.compile(r"Target not halted|Failed to halt", re.IGNORECASE)
 
 
@@ -657,16 +660,7 @@ def verify_stlink_target(cfg: ProbeConfig, gdbserver: str) -> str:
     if cfg.speed_khz:
         connect.append(f"freq={cfg.speed_khz}")
     try:
-        completed = subprocess.run(
-            [cli, *connect],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=30,
-            check=False,
-            **_no_window_kwargs(),
-        )
+        completed = process_guard.run_tracked([cli, *connect], kind=_VERIFIER_KIND, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         raise HardwareUnavailableError(
             f"Cannot check the ST-LINK target with STM32CubeProgrammer: {exc}"
@@ -762,6 +756,7 @@ class DebugProbeServer:
             f"portbridge.probe.{config.kind}.{config.resolved_gdb_port}"
         )
         self._process: Any = None
+        self._guard: process_guard.ChildGuard | None = None
         self._pump_task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
         self._exited = asyncio.Event()
@@ -811,7 +806,11 @@ class DebugProbeServer:
 
         if cfg.kind == "stlink" and cfg.device:
             loop = asyncio.get_running_loop()
-            found = await loop.run_in_executor(None, self._target_verifier, cfg, executable)
+            try:
+                found = await loop.run_in_executor(None, self._target_verifier, cfg, executable)
+            except BaseException:
+                process_guard.kill_all(_VERIFIER_KIND)
+                raise
             logger.info("ST-LINK target %s matches the configured %s", found, cfg.device.upper())
 
         logger.info("Starting %s: %s", self._name, subprocess.list2cmdline(argv))
@@ -821,11 +820,12 @@ class DebugProbeServer:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                **_no_window_kwargs(),
+                **process_guard.spawn_kwargs(),
             )
         except OSError as exc:
             raise HardwareUnavailableError(f"Cannot launch {self._name}: {exc}") from exc
 
+        self._guard = process_guard.adopt(self._process, _PROBE_KIND)
         self._pump_task = asyncio.create_task(self._pump_output())
         try:
             done = await self._wait_until_ready(host, telnet_port)
@@ -892,20 +892,44 @@ class DebugProbeServer:
         if proc is None:
             return
 
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), self._stop_timeout)
-            except asyncio.TimeoutError:
-                logger.warning("%s did not exit after terminate; killing it", self._name)
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                await proc.wait()
+        try:
+            if proc.returncode is None:
+                self._signal(proc, graceful=True)
+                try:
+                    await asyncio.wait_for(proc.wait(), self._stop_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("%s did not exit after terminate; killing it", self._name)
+                    self._signal(proc, graceful=False)
+                    try:
+                        await asyncio.wait_for(proc.wait(), self._stop_timeout)
+                    except asyncio.TimeoutError:
+                        logger.error("%s (pid %s) did not exit after kill", self._name, proc.pid)
+        finally:
+            # Also reached when this coroutine is cancelled: never leave the child behind.
+            if proc.returncode is None:
+                self._signal(proc, graceful=False)
+            self._release_guard()
 
         await self._finish_pump()
         self._process = None
         logger.info("%s stopped", self._name)
+
+    def _signal(self, proc: Any, *, graceful: bool) -> None:
+        guard = self._guard
+        if guard is not None and (guard.terminate() if graceful else guard.kill()):
+            return
+        with contextlib.suppress(ProcessLookupError):
+            if graceful:
+                proc.terminate()
+            else:
+                proc.kill()
+
+    def _release_guard(self) -> None:
+        # Sweep helpers the leader left in its process group before forgetting it.
+        guard, self._guard = self._guard, None
+        if guard is not None:
+            guard.kill()
+            guard.release()
 
     async def _finish_pump(self) -> None:
         task = self._pump_task
@@ -944,6 +968,7 @@ class DebugProbeServer:
             await proc.wait()
         finally:
             self._exited.set()
+            self._release_guard()
 
         if self._running and not self._stopping:
             logger.error(

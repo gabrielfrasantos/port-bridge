@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import signal
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication
 
 
 def main() -> None:
@@ -69,7 +74,30 @@ def main() -> None:
 
     QTimer.singleShot(3000, checker.check_in_background)
 
+    # Every way out of the app (tray Quit, last window closed, signals) ends in
+    # QApplication.quit(), so this is the one place the bridge and its probe children stop.
+    app.aboutToQuit.connect(window.shutdown)
+    _quit_on_signals(app)
+
     sys.exit(app.exec())
+
+
+def _quit_on_signals(app: QApplication) -> None:
+    from PySide6.QtCore import QTimer
+
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    if hasattr(signal, "SIGBREAK"):
+        signals.append(signal.SIGBREAK)
+    for sig in signals:
+        signal.signal(sig, lambda *_: app.quit())
+
+    # Python signal handlers only run while the interpreter executes bytecode, which a
+    # blocked Qt event loop never does; a no-op timer hands control back regularly.
+    wake = QTimer(app)
+    wake.timeout.connect(lambda: None)
+    wake.start(250)
 
 
 if __name__ == "__main__":
