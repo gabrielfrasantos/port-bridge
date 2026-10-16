@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.12](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.11...v0.1.12) (2026-10-16)
+
+
+### Bug Fixes
+
+* stop probes, serial and CAN cleanly on quit, signals and failed stops ([#48](https://github.com/gabrielfrasantos/port-bridge/issues/48)) ([0a71a22](https://github.com/gabrielfrasantos/port-bridge/commit/0a71a222fd9ca2c8d9873ac8b47c428be1393402))
+
+
+### Build System
+
+* **deps:** Bump actions/download-artifact from 8.0.1 to 8.0.2 ([#47](https://github.com/gabrielfrasantos/port-bridge/issues/47)) ([a4de847](https://github.com/gabrielfrasantos/port-bridge/commit/a4de847388cb78c1f7984215279dc702e4b345c1))
+
 ## [0.1.11](https://github.com/gabrielfrasantos/port-bridge/compare/v0.1.10...v0.1.11) (2026-10-08)
 
 
